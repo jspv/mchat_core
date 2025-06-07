@@ -1,0 +1,213 @@
+# Agent configuration
+extra_agents_file = "agents.yaml"
+# Tool logfiles (optional)
+google_search_log_file = "google_search.log"
+generate_image_log_file = "generate_image.log"
+
+# Models
+# sections need to start with model. (with period) and no other periods in the section name
+# model.type.model_id, model_id is what will show in the interface
+
+# Important
+# Image models and settings here are for expliclitly calling the immage models from the prompt.
+# The generate_image tool does not use these settings, only the API key
+
+# 
+# Required Fields
+# 
+# Chat Models
+# - api_type: ["open_ai", "azure"]
+# - model_type: "chat"
+# - model: "name of model"
+# - api_key: "your key or dynaconf lookup to get the key"
+# - model: "the openai name for the model"
+#
+# Azure Chat Models (additional)
+# - azure_endpoint: "URL for your endpoint"
+# - azure_deployment: "the azure name for the model in your deployment"
+# - api_version = "api version"
+#
+# Image Models
+# - api_type: ["open_ai", "azure"]
+# - model_type: "image"
+# - model: "name of model"
+# - size: "size of images to create"
+# - num_images: "number of images to create"
+# - api_key: "your key or dynaconf lookup to get the key"
+# 
+# Azure Image Model (additional)
+# - azure_endpoint: "URL for your endpoint"
+# - azure_deployment: "the azure name for the model in your deployment"
+# - api_version = "api version"
+
+
+[models.chat.gpt-4o-mini]
+api_key = "@format {this.openai_api_key}"
+model = "gpt-4o-mini"
+api_type = "open_ai"
+base_url = "https://api.openai.com/v1"
+_image_input_support = true
+_cost_input = 0.15
+_cost_output = 0.6
+_max_context = 128000
+_max_output = 16384
+
+[models.chat.gpt-4_1-mini]
+api_key = "@format {this.openai_api_key}"
+model = "gpt-4.1-mini"
+api_type = "open_ai"
+base_url = "https://api.openai.com/v1"
+_image_input_support = true
+_cost_input = 0.4
+_cost_output = 1.6
+_max_context = 1047576
+_max_output = 32768
+
+[models.chat.gpt-4o]
+api_key = "@format {this.openai_api_key}"
+model = "gpt-4o"
+api_type = "open_ai"
+base_url = "https://api.openai.com/v1"
+_image_input_support = true
+_cost_input = 2.50
+_cost_output = 10.00
+_max_context = 128000
+_max_output = 16384
+
+[models.chat.gpt-4_1]
+api_key = "@format {this.openai_api_key}"
+model = "gpt-4.1"
+api_type = "open_ai"
+base_url = "https://api.openai.com/v1"
+_image_input_support = true
+_cost_input = 2.00
+_cost_output = 8.00
+_max_context = 1047576
+_max_output = 32768
+
+[models.chat.o1]
+api_key = "@format {this.openai_api_key}"
+model = "o1"
+api_type = "open_ai"
+base_url = "https://api.openai.com/v1"
+_image_input_support = true
+_streaming_support = true
+_system_prompt_support = true
+_tool_support = true
+_temperature_support = false
+_cost_input = 15.00
+_cost_output = 60.00
+_max_context = 200000
+_max_output = 100000
+
+
+[models.chat.o3]
+api_key = "@format {this.openai_api_key}"
+model = "o3"
+api_type = "open_ai"
+base_url = "https://api.openai.com/v1"
+_image_input_support = true
+_streaming_support = true
+_system_prompt_support = true
+_tool_support = true
+_temperature_support = false
+_cost_input = 10.00
+_cost_output = 40.00
+_max_context = 200000
+_max_output = 100000
+
+[models.chat.anthropic-claude-3_5-haiku]
+api_key = "@format {this.openrouter_api_key}"
+model = "anthropic/claude-3.5-haiku-20241022"
+api_type = "open_ai"
+base_url = "https://openrouter.ai/api/v1"
+model_info.family = "claude-3.5-haiku"
+model_info.function_calling = true
+model_info.vision = false
+model_info.json_output = false
+
+[models.chat.anthropic-claude-3_7]
+api_key = "@format {this.openrouter_api_key}"
+model = "anthropic/claude-3.7-sonnet:thinking"
+api_type = "open_ai"
+base_url = "https://openrouter.ai/api/v1"
+model_info.family = "claude-3.7"
+model_info.function_calling = true
+model_info.vision = false
+model_info.json_output = false
+
+[models.chat.azure_openai_gpt_4o]
+# api_key = "@format {this.azure_api_key}"
+api_key = "provider"
+api_type = "azure"
+model = "gpt-4o"
+azure_deployment = "gpt-4o"
+azure_endpoint = "@format {this.azure_endpoint}"
+api_version = "2024-10-21"
+
+[models.image.dall-e-2]
+api_key = "@format {this.openai_api_key}"
+model = "dall-e-2"
+api_type = "open_ai"
+size = "1024x1024"
+quality = "standard"
+num_images = 1
+
+[models.image.dall-e-3]
+api_key = "@format {this.openai_api_key}"
+model = "dall-e-3"
+api_type = "open_ai"
+size = "1024x1024"
+quality = "standard"
+num_images = 1
+
+[models.embedding.text-embedding-ada-002]
+api_key = "@format {this.openai_api_key}"
+model = "text-embedding-ada-002"
+api_type = "open_ai"
+
+[models.embedding.azure_text-embedding-ada-002]
+api_key = "provider"
+model = "text-embedding-ada-002"
+api_type = "azure"
+api_version = "2023-09-01-preview"
+azure_endpoint = "@format {this.azure_endpoint}"
+azure_deployment = "text-embedding-ada-002"
+
+[defaults]
+
+# chat_model = "azure_openai_gpt_4o"
+chat_model = "gpt-4_1"
+chat_temperature = 0.7
+agent = "default_with_tools"
+image_model = "dall-e-3"
+embedding_model = "text-embedding-ada-002"
+
+# for memory summary and history labels
+memory_model = "gpt-4o-mini"
+memory_model_temperature = 0.1
+memory_model_max_tokens = 2048
+
+# For RAG
+rag_llm_api_key = "@format {this.openai_api_key}"
+rag_llm_model = "gpt-4o-mini"
+rag_topdir = "docs"
+docling_artifacts_path = ".docling_artifacts"
+
+
+#
+# either here or in .secrets.toml
+# 
+
+# OpenAI API
+# openai_api_key = "oai_ai_api_key_goes_here"
+
+# Azure OpenAI API
+# azure_tenant_id = "azure_tenant_id_goes_here"
+# azure_client_id = "azure_client_id_goes_here"
+# azure_client_id_secret = "azure_client_id_secret_goes_here"
+
+
+# Google Search API
+# google_api_key = "google_api_key_goes_here"
+# google_search_engine_id = "google_search_engine_id_goes_here"
