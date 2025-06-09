@@ -1,8 +1,10 @@
 import asyncio
 import copy
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
 from typing import Literal
 
+from autogen_core.models import SystemMessage, UserMessage
 from autogen_ext.models.openai import (
     AzureOpenAIChatCompletionClient,
     OpenAIChatCompletionClient,
@@ -16,6 +18,8 @@ from .config import get_settings
 from .logging_utils import get_logger, trace  # noqa: F401
 
 logger = get_logger(__name__)
+
+ChatCompletionClient = AzureOpenAIChatCompletionClient | OpenAIChatCompletionClient
 
 
 @dataclass
@@ -284,7 +288,7 @@ class ModelManager:
             if all(getattr(value, k) in v for k, v in filter_dict.items())
         ]
 
-    def open_model(self, model_id: str, **kwargs) -> object:
+    def open_model(self, model_id: str, **kwargs) -> ChatCompletionClient:
         logger.debug(f"Opening model {model_id}")
         record = copy.deepcopy(self.config[model_id])
         model_kwargs = {
@@ -316,6 +320,29 @@ class ModelManager:
             return DallEAPIWrapper(**model_kwargs)
 
         raise ValueError("Invalid model_type")
+
+    @staticmethod
+    async def aask(question: str, model: str = None, system_prompt: str = None) -> str:
+        """Asks a question to the model and returns the response."""
+        mm = ModelManager()
+        if model is None:
+            model = mm.default_chat_model
+        client = mm.open_model(model)
+        if system_prompt:
+            out = await client.create(
+                [
+                    SystemMessage(content=system_prompt),
+                    UserMessage(content=question, source="user"),
+                ]
+            )
+        else:
+            out = await client.create([UserMessage(content=question, source="user")])
+        return out.content
+
+    @staticmethod
+    def ask(question: str, model: str = None, system_prompt: str = None) -> str:
+        """Asks a question to the model and returns the response."""
+        return AsyncRunner.run_sync(ModelManager.aask(question, model, system_prompt))
 
     def get_streaming_support(self, model_id: str) -> bool:
         return self.config[model_id]._streaming_support
@@ -349,3 +376,22 @@ class ModelManager:
     @property
     def available_embedding_models(self) -> list:
         return self.filter_models({"model_type": ["embedding"]})
+
+
+class AsyncRunner:
+    _executor = None
+
+    @classmethod
+    def run_sync(cls, coro):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        else:
+            if cls._executor is None:
+                cls._executor = ThreadPoolExecutor()
+
+            def runner():
+                return asyncio.run(coro)
+
+            return cls._executor.submit(runner).result()

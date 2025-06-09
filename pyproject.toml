@@ -40,7 +40,7 @@ tools = [
 
 
 [tool.setuptools]
-packages = ["mchat_core"]
+packages = ["mchat_core", "mchat_core.tools"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"

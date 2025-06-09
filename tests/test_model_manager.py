@@ -175,6 +175,7 @@ def test_open_model_dispatches_clients(mock_dalle, mock_chat, dynaconf_test_sett
     mm.open_model("dall-e-3")
     mock_dalle.assert_called_once()
 
+
 def test_open_model_azure_chat_with_token_provider(dynaconf_test_settings):
     """
     This test will confirm that if an Azure model has 'api_key' == 'provider',
@@ -194,7 +195,6 @@ def test_open_model_azure_chat_with_token_provider(dynaconf_test_settings):
     dynaconf_test_settings.set("models__chat__azure-model__api_key","some-other-token")
     mm2 = ModelManager(settings_conf=dynaconf_test_settings)
     assert mm2.azure_token_provider is None
-
 
 
 def test_open_model_invalid_model_type(dynaconf_test_settings):
@@ -229,3 +229,14 @@ def test_open_model_embedding_should_fail_by_default(mock_openai, dynaconf_test_
     with pytest.raises(ValueError) as exc:
         mm.open_model("text-embedding-ada-002")
     assert "Invalid model_type" in str(exc.value)
+
+
+@patch("mchat_core.model_manager.ModelManager.open_model")
+def test_static_ask_and_aask_sync(mock_open_model):
+    class MockClient:
+        async def create(self, msgs):
+            return "response"
+    mock_open_model.return_value = MockClient()
+    from mchat_core.model_manager import ModelManager
+    output_sync = ModelManager.ask("hi", "gpt-4_1")
+    assert "response" in output_sync
