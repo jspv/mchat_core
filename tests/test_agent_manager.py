@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 @pytest.fixture
 def dynaconf_test_settings(tmp_path, monkeypatch):
     """Create a minimal TOML config and patch settings to force ModelManager to use it."""
+    import os
     settings_toml = tmp_path / "settings.toml"
     settings_content = """
     [models.chat.gpt-4_1]
@@ -36,6 +37,7 @@ def dynaconf_test_settings(tmp_path, monkeypatch):
         return test_settings
 
     monkeypatch.setattr("mchat_core.config.get_settings", dummy_get_settings)
+    monkeypatch.setenv("DYNACONF_SETTINGS", str(settings_toml))
     return test_settings
 
 @pytest.fixture
@@ -190,9 +192,17 @@ def test_load_agents_from_json_string(dynaconf_test_settings, patch_tools):
 def test_load_agents_ignores_non_agent_string(dynaconf_test_settings, patch_tools):
     from mchat_core.agent_manager import AutogenManager
     non_agent_str = "this is not json or yaml"
-    manager = AutogenManager(
-        message_callback=lambda *a, **kw: None,
-        agent_paths=[non_agent_str]
-    )
-    # Should not load any agents from the non-agent string
-    assert manager.agents == {}
+    with pytest.raises(ValueError):
+        AutogenManager(
+            message_callback=lambda *a, **kw: None,
+            agent_paths=[non_agent_str]
+        )
+
+def test_load_agents_invalid_json_string(dynaconf_test_settings, patch_tools):
+    from mchat_core.agent_manager import AutogenManager
+    non_agent_str = '{"foo": "bar"}'  # Looks like JSON but not a valid agent definition
+    with pytest.raises(ValueError):
+        AutogenManager(
+            message_callback=lambda *a, **kw: None,
+            agent_paths=[non_agent_str]
+        )

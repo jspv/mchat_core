@@ -577,9 +577,35 @@ class AutogenManager:
                 elif fmt == "yaml":
                     file_agents = yaml.safe_load(data)
                 agents.update(file_agents)
-            except Exception as e:
-                logger.error(f"Error parsing agent string ({fmt}): {e}")
-                raise
+            except (ValueError, AttributeError) as e:
+                error_msg = f"Error parsing agent string ({fmt}): {e}"
+                logger.error(error_msg)
+                raise ValueError(error_msg) from e
+
+        # Validate agents
+        for agent_name, agent_data in agents.items():
+            if not isinstance(agent_data, dict):
+                raise ValueError(
+                    f"Agent '{agent_name}' must be a dict, got {type(agent_data)}"
+                )
+            # 'prompt' is not required for team agents
+            if (
+                "type" not in agent_data or agent_data["type"] != "team"
+            ) and "prompt" not in agent_data:
+                raise ValueError(
+                    f"Agent '{agent_name}' missing required 'prompt' field"
+                )
+            if "description" not in agent_data:
+                raise ValueError(
+                    f"Agent '{agent_name}' missing required 'description' field"
+                )
+            if "type" in agent_data and agent_data["type"] == "team":
+                if "agents" not in agent_data or not isinstance(
+                    agent_data["agents"], list
+                ):
+                    raise ValueError(
+                        f"Team agent '{agent_name}' must have an 'agents' list"
+                    )
         return agents
 
     def _create_team(
