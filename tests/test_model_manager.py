@@ -232,10 +232,13 @@ def test_open_model_embedding_should_fail_by_default(mock_openai, dynaconf_test_
 
 
 @patch("mchat_core.model_manager.ModelManager.open_model")
-def test_static_ask_and_aask_sync(mock_open_model):
+def test_static_ask_and_aask_sync(mock_open_model, dynaconf_test_settings):
+    class MockResponse:
+        def __init__(self, content):
+            self.content = content
     class MockClient:
         async def create(self, msgs):
-            return "response"
+            return MockResponse("response")
     mock_open_model.return_value = MockClient()
     from mchat_core.model_manager import ModelManager
     output_sync = ModelManager.ask("hi", "gpt-4_1")

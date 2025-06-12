@@ -268,7 +268,11 @@ class ModelManager:
         # set the token provider if there is at least one azure model
         for azure_model in self.filter_models({"api_type": ["azure"]}):
             if self.config[azure_model].api_key == "provider":
-                self.azure_token_provider = AzureADTokenProvider()
+                self.azure_token_provider = AzureADTokenProvider(
+                    tenant_id=settings.get("azure_tenant_id"),
+                    client_id=settings.get("azure_client_id"),
+                    client_secret=settings.get("azure_client_id_secret"),
+                )
                 break
 
         self.default_chat_model = settings.defaults.chat_model

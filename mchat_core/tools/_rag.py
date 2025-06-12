@@ -6,7 +6,6 @@ from mchat_core.logging_utils import get_logger, trace  # noqa: F401
 from mchat_core.tool_utils import BaseTool
 
 logger = get_logger(__name__)
-logger.warning("Starting the RAG tool")
 
 client = chromadb.PersistentClient(
     path="./chroma_persist",

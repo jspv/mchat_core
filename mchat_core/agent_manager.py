@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import json
 import os
@@ -142,7 +143,7 @@ class AutogenManager:
             agent_paths is None
         ):  # Both are None or both are provided
             raise ValueError(
-                "You must specify exactly one of 'agents' or 'agent_paths', not both."
+                "You must specify exactly one of 'agents' or 'agent_paths'"
             )
 
         self.mm = ModelManager()
@@ -281,45 +282,6 @@ class AutogenManager:
         else:
             raise ValueError("stream_tokens can only be set if there is an agent")
 
-    def _load_agents(self, paths: list[str]) -> dict:
-        """Read the agent definition files and load the agents"""
-        agent_files = []
-        # load the agent files
-        for path in paths:
-            if os.path.isdir(path):
-                for filename in os.listdir(path):
-                    if filename.endswith(".json") or filename.endswith(".yaml"):
-                        agent_files.append(os.path.join(path, filename))
-            elif (
-                path.endswith(".json")
-                or path.endswith(".yaml")
-                and os.path.exists(path)
-            ):
-                agent_files.append(path)
-
-        agents = {}
-        for file in agent_files:
-            extension = os.path.splitext(file)[1]
-            with open(file, encoding="utf8") as f:
-                logger.debug(f"Loading agent file {file}")
-                try:
-                    if extension == ".json":
-                        file_agents = json.load(f)
-                    elif extension == ".yaml":
-                        file_agents = yaml.safe_load(f)
-                except FileNotFoundError:
-                    logger.error(f"Error: file {file} not found.")
-                except yaml.YAMLError as e:
-                    logger.error(f"Error parsing YAML file {file}: {e}")
-                except json.JSONDecodeError as e:
-                    logger.error(f"Error parsing JSON file {file}: {e}")
-                except Exception as e:
-                    logger.exception(
-                        f"An unexpected error occurred processing {file}: {e}"
-                    )
-                agents.update(file_agents)
-        return agents
-
     def cancel(self) -> None:
         """Cancel the current conversation"""
         if self._cancelation_token:
@@ -345,9 +307,8 @@ class AutogenManager:
     async def new_conversation(
         self,
         agent: str,
-        model_id: str,
-        temperature: float = 0.0,
-        # TODO streaming should be a specified default, not hard coded
+        model_id: str = None,
+        temperature: float = None,
         stream_tokens: bool = True,
     ) -> None:
         """Intialize a new conversation with the given agent and model
@@ -356,10 +317,10 @@ class AutogenManager:
         ----------
         agent : str
             agent to use
-        model_id: str
-            model to use
+        model_id : str, optional
+            model to use (overrides agent config/default)
         temperature : float, optional
-            model temperature setting, by default 0.0
+            temperature to use (overrides agent config/default)
         stream_tokens: bool, optional
             if the model should stream tokens back to the UI
         """
@@ -377,18 +338,20 @@ class AutogenManager:
 
         agent_data = self._agents[agent]
 
-        self._prompt = (
-            self._agents[agent]["prompt"] if "prompt" in self._agents[agent] else ""
-        )
+        # Use model from argument, agent config, or default
+        if model_id is None:
+            model_id = agent_data.get("model", self.mm.default_chat_model)
+        # Use temperature from argument, agent config, or default
+        if temperature is None:
+            temperature = agent_data.get(
+                "temperature", self.mm.default_chat_temperature
+            )
 
+        self._prompt = agent_data["prompt"] if "prompt" in agent_data else ""
         self._description = (
-            self._agents[agent]["description"]
-            if "description" in self._agents[agent]
-            else ""
+            agent_data["description"] if "description" in agent_data else ""
         )
 
-        # TODO: what to do when the model is specified for a team-based agent that
-        # currently this is ingored.
         if "type" in agent_data and agent_data["type"] == "team":
             # Team-based Agents
             self.agent_team = self._create_team(agent_data["team_type"], agent_data)
@@ -524,6 +487,101 @@ class AutogenManager:
                 termination_condition=termination,
             )
 
+    async def ask(self, task: str) -> TaskResult:
+        self._cancelation_token = CancellationToken()
+
+        try:
+            result: TaskResult = await self._consume_agent_stream(
+                agent_runner=self.agent_team.run_stream,
+                oneshot=self.oneshot,
+                task=task,
+                cancellation_token=self._cancelation_token,
+            )
+        except Exception as e:
+            logger.error(f"Error in agent stream: {e}")
+            result = TaskResult(messages=["Error in agent stream"], stop_reason="error")
+            await self._message_callback(
+                "Error in response from AI, see debug", flush=True
+            )
+
+        self._cancelation_token = None
+        if result.stop_reason.startswith("Exception occurred"):
+            # notifiy the UI that an exception occurred
+            logger.warning(
+                f"Exception occurred talking to the AI: {result.stop_reason}"
+            )
+            await self._message_callback(
+                "Error in response from AI, see debug", flush=True
+            )
+        logger.debug(f"Final result: {result.stop_reason}")
+        await asyncio.sleep(0.1)  # Allow for autogen to cleanup/end the conversation
+        return result
+
+    def _load_agents(self, paths: list[str]) -> dict:
+        """Read the agent definition files and load the agents, or parse agent definitions from strings"""
+        agent_files = []
+        agent_strings = []
+        for path in paths:
+            if isinstance(path, str):
+                logger.debug(f"Loading agent from path: {path}")
+                # Check if it's a directory
+                if os.path.isdir(path):
+                    logger.debug(f"Loading agents from directory: {path}")
+                    for filename in os.listdir(path):
+                        if filename.endswith(".json") or filename.endswith(".yaml"):
+                            agent_files.append(os.path.join(path, filename))
+                # Check if it's a file
+                elif (
+                    path.endswith(".json") or path.endswith(".yaml")
+                ) and os.path.exists(path):
+                    logger.debug(f"Loading agent from file: {path}")
+                    agent_files.append(path)
+                else:
+                    logger.debug(f"Assuming {path} is a YAML or JSON string")
+                    # Try to detect if it's a JSON string, otherwise assume YAML
+                    s = path.strip()
+                    if (s.startswith("{") and s.endswith("}")) or (
+                        s.startswith("[") and s.endswith("]")
+                    ):
+                        agent_strings.append(("json", s))
+                    else:
+                        agent_strings.append(("yaml", s))
+        agents = {}
+        # Load from files
+        for file in agent_files:
+            extension = os.path.splitext(file)[1]
+            with open(file, encoding="utf8") as f:
+                logger.debug(f"Loading agent file {file}")
+                try:
+                    if extension == ".json":
+                        file_agents = json.load(f)
+                    elif extension == ".yaml":
+                        file_agents = yaml.safe_load(f)
+                except FileNotFoundError:
+                    logger.error(f"Error: file {file} not found.")
+                except yaml.YAMLError as e:
+                    logger.error(f"Error parsing YAML file {file}: {e}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error parsing JSON file {file}: {e}")
+                except Exception as e:
+                    logger.exception(
+                        f"An unexpected error occurred processing {file}: {e}"
+                    )
+                agents.update(file_agents)
+        # Load from strings
+        for fmt, data in agent_strings:
+            logger.debug(f"Loading agent from string ({fmt})")
+            try:
+                if fmt == "json":
+                    file_agents = json.loads(data)
+                elif fmt == "yaml":
+                    file_agents = yaml.safe_load(data)
+                agents.update(file_agents)
+            except Exception as e:
+                logger.error(f"Error parsing agent string ({fmt}): {e}")
+                raise
+        return agents
+
     def _create_team(
         self, team_type: str, agent_data: dict
     ) -> RoundRobinGroupChat | SelectorGroupChat | MagenticOneGroupChat:
@@ -635,36 +693,6 @@ class AutogenManager:
             )
         else:
             raise ValueError(f"Unknown team type {team_type}")
-
-    async def ask(self, task: str) -> TaskResult:
-        self._cancelation_token = CancellationToken()
-
-        try:
-            result: TaskResult = await self._consume_agent_stream(
-                agent_runner=self.agent_team.run_stream,
-                oneshot=self.oneshot,
-                task=task,
-                cancellation_token=self._cancelation_token,
-            )
-        except Exception as e:
-            logger.error(f"Error in agent stream: {e}")
-            result = TaskResult(messages=["Error in agent stream"], stop_reason="error")
-            await self._message_callback(
-                "Error in response from AI, see debug", flush=True
-            )
-
-        self._cancelation_token = None
-        if result.stop_reason.startswith("Exception occurred"):
-            # notifiy the UI that an exception occurred
-            logger.warning(
-                f"Exception occurred talking to the AI: {result.stop_reason}"
-            )
-            await self._message_callback(
-                "Error in response from AI, see debug", flush=True
-            )
-
-        logger.debug(f"Final result: {result.stop_reason}")
-        return result
 
     async def _consume_agent_stream(
         self,

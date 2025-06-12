@@ -152,3 +152,47 @@ def test_error_on_both_agents_and_agent_paths(monkeypatch, dynaconf_test_setting
             agents=dummy_agents,
             agent_paths=[agents_yaml]
         )
+
+def test_load_agents_from_json_string(dynaconf_test_settings, patch_tools):
+    from mchat_core.agent_manager import AutogenManager
+    json_str = '{"json_agent": {"description": "json agent", "prompt": "hi"}}'
+    manager = AutogenManager(
+        message_callback=lambda *a, **kw: None,
+        agent_paths=[json_str]
+    )
+    assert "json_agent" in manager.agents
+    assert manager.agents["json_agent"]["description"] == "json agent"
+
+def test_load_agents_from_yaml_string(dynaconf_test_settings, patch_tools):
+    from mchat_core.agent_manager import AutogenManager
+    yaml_str = """
+yaml_agent:
+  description: yaml agent
+  prompt: hello
+"""
+    manager = AutogenManager(
+        message_callback=lambda *a, **kw: None,
+        agent_paths=[yaml_str]
+    )
+    assert "yaml_agent" in manager.agents
+    assert manager.agents["yaml_agent"]["description"] == "yaml agent"
+
+def test_load_agents_from_json_string(dynaconf_test_settings, patch_tools):
+    from mchat_core.agent_manager import AutogenManager
+    json_str = '{"json_agent": {"description": "json agent", "prompt": "hello"}}'
+    manager = AutogenManager(
+        message_callback=lambda *a, **kw: None,
+        agent_paths=[json_str]
+    )
+    assert "json_agent" in manager.agents
+    assert manager.agents["json_agent"]["description"] == "json agent"
+
+def test_load_agents_ignores_non_agent_string(dynaconf_test_settings, patch_tools):
+    from mchat_core.agent_manager import AutogenManager
+    non_agent_str = "this is not json or yaml"
+    manager = AutogenManager(
+        message_callback=lambda *a, **kw: None,
+        agent_paths=[non_agent_str]
+    )
+    # Should not load any agents from the non-agent string
+    assert manager.agents == {}
