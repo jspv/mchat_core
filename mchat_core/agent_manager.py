@@ -547,7 +547,8 @@ class AutogenManager:
         return result
 
     def _load_agents(self, paths: list[str]) -> dict:
-        """Read the agent definition files and load the agents, or parse agent definitions from strings"""
+        """Read the agent definition files and load the agents, or parse agent
+        definitions from strings"""
         agent_files = []
         agent_strings = []
         for path in paths:
