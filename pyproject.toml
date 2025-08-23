@@ -1,6 +1,6 @@
 [project]
 name = "mchat-core"
-version = "0.1.0"
+version = "0.1.1"
 description = "Reusable core components for mchat"
 authors = [{ name = "jspv", email = "jspvgithub@twinleaf.xyz" }]
 readme = "README.md"
@@ -13,6 +13,23 @@ dependencies = [
     "playwright>=1.52.0",
     "pyyaml>=6.0.2",
     "rich>=14.0.0",
+]
+
+# >>> pip / PyPI extras (PEP 621) <<<
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4.0",
+    "pytest-asyncio>=1.0.0",
+    "pytest-forked>=1.6.0",
+    "ruff>=0.8.4",
+    "toml>=0.10.2",
+]
+tools = [
+    "bs4>=0.0.2",
+    "chromadb>=1.0.12",
+    "fredapi>=0.5.2",
+    "pypdf>=5.6.0",
+    "tzlocal>=5.3.1",
 ]
 
 [build-system]
@@ -46,10 +63,10 @@ packages = ["mchat_core", "mchat_core.tools"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
-addopts = "--forked"  # was: "-m 'not tools' --forked"
+addopts = "--forked" # was: "-m 'not tools' --forked"
 markers = [
-  "tools: tests that require optional tool dependencies",
-  "integration: slow/integration tests"
+    "tools: tests that require optional tool dependencies",
+    "integration: slow/integration tests",
 ]
 
 [tool.ruff]
