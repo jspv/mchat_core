@@ -84,16 +84,27 @@ def agents_yaml(tmp_path):
 
 @pytest.fixture
 def patch_tools(monkeypatch):
-    """Patch out actual tool loading in AutogenManager for test speed and independence."""
-    # Patch out the importlib logic that loads tools from filesystem
-    dummy_tool = MagicMock(is_callable=True, name="google_search", description="desc")
-    dummy_tool.__class__.name = "google_search"
-    tool_dict = {"google_search": dummy_tool}
-    monkeypatch.setattr("mchat_core.agent_manager.BaseTool", object)
+    """Patch out actual tool loading in AutogenManager for test speed and isolation.
+
+    Returns a dict of fake tools keyed by the names referenced in tests/fixtures.
+    """
+    from unittest.mock import MagicMock
+
+    google_search = MagicMock(name="google_search")
+    generate_image = MagicMock(name="generate_image")
+    today = MagicMock(name="today")
+
+    fake_tools = {
+        "google_search": google_search,
+        "generate_image": generate_image,
+        "today": today,
+    }
+
+    # AutogenManager uses load_tools from its own module namespace; accept any args.
     monkeypatch.setattr(
-        "mchat_core.agent_manager.FunctionTool", MagicMock(return_value=dummy_tool)
+        "mchat_core.agent_manager.load_tools", lambda *a, **kw: fake_tools, raising=False
     )
-    return tool_dict
+    return fake_tools
 
 
 def test_init_and_properties(dynaconf_test_settings, agents_yaml, patch_tools):
@@ -122,12 +133,18 @@ def test_agent_model_manager_isolated(dynaconf_test_settings, agents_yaml, patch
 @pytest.mark.tools
 def test_tool_loading_real(dynaconf_test_settings, agents_yaml):
     from .conftest import require_pkgs
-
     require_pkgs(["tzlocal"])  # minimal for the "today" tool
-    from mchat_core.agent_manager import AutogenManager
 
+    # Point AutogenManager at the package tools directory explicitly
+    import os
+    import mchat_core as pkg
+    tools_dir = os.path.join(os.path.dirname(pkg.__file__), "tools")
+
+    from mchat_core.agent_manager import AutogenManager
     manager = AutogenManager(
-        message_callback=lambda *a, **kw: None, agent_paths=[agents_yaml]
+        message_callback=lambda *a, **kw: None,
+        agent_paths=[agents_yaml],
+        tools_directory=tools_dir,
     )
     assert "today" in manager.tools
 
@@ -212,13 +229,14 @@ def test_load_agents_invalid_yaml_string(dynaconf_test_settings, patch_tools):
         )
 
 
-def test_load_agents_invalid_json_string(dynaconf_test_settings, patch_tools):
+def test_load_agents_non_agent_json_like_string_raises(dynaconf_test_settings, patch_tools):
     from mchat_core.agent_manager import AutogenManager
 
-    non_agent_str = '{"foo": "bar"}'  # Looks like JSON but not a valid agent definition
+    # Looks like JSON but is not a valid agents mapping (values must be dicts)
+    bad_json = '{"foo": "bar"}'
     with pytest.raises(ValueError):
         AutogenManager(
-            message_callback=lambda *a, **kw: None, agent_paths=[non_agent_str]
+            message_callback=lambda *a, **kw: None, agent_paths=[bad_json]
         )
 
 

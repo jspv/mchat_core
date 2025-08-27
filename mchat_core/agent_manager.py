@@ -1,5 +1,4 @@
 import asyncio
-import importlib
 import json
 import os
 from collections.abc import AsyncIterable, Callable, Mapping, Sequence
@@ -56,23 +55,10 @@ from autogen_ext.models.openai._openai_client import (
 from .logging_utils import get_logger, trace  # noqa: F401
 from .model_manager import ModelManager
 from .terminator import SmartReflectorTermination
-from .tool_utils import BaseTool
+from .tool_utils import load_tools
 
 logger = get_logger(__name__)
 
-intent_prompt = (
-    "A human is having a conversation with an AI, you are watching that conversation"
-    " and your job is to determine what the human is intending to do in their last"
-    " message to the AI.  Reply with one of the following options:  1) if the human is"
-    " asking to change their agent, reply with the word 'agent', 2) if the human is"
-    " asking a new question unrelated to the current conversation, reply with the word"
-    " 'ask', 3) if the human is continuing an existing conversation, reply with the"
-    " word 'continue' 4) if the human is responding to a question that the AI asked,"
-    " reply with the word 'reply', 5) if the human is trying to open or loading a file,"
-    " reply with the word 'new', 7) if the human is trying to end the conversation,"
-    " reply with the word 'end'.  The previous conversation follows: {conversation}\n"
-    " The new message to the AI is: {input}"
-)
 
 label_prompt = (
     "Here is a conversation between a Human and AI. Give me no more than 10 words which"
@@ -137,6 +123,8 @@ class AutogenManager:
         agents: dict | None = None,
         agent_paths: list[str] | None = None,
         stream_tokens: bool = None,
+        tools_directory: str | None = None,
+        load_default_tools: bool = True,
     ):
         # Ensure that exactly one of agents or agent_paths is provided
         if (agents is None) == (
@@ -184,41 +172,17 @@ class AutogenManager:
         self._cancelation_token = None
 
         # Inialize available tools
-        self.tools = {}
-        # Get the directory of the current file
-        current_directory = os.path.dirname(os.path.abspath(__file__))
-        tools_directory = os.path.join(current_directory, "tools")
-
-        for filename in os.listdir(tools_directory):
-            if filename.endswith(".py"):
-                file_path = os.path.join(tools_directory, filename)
-                spec = importlib.util.spec_from_file_location(filename[:-3], file_path)
-                module = importlib.util.module_from_spec(spec)
-                try:
-                    spec.loader.exec_module(module)
-
-                    # Assuming all tool classes are derived from BaseTool
-                    for item_name in dir(module):
-                        item = getattr(module, item_name)
-                        if (
-                            isinstance(item, type)
-                            and issubclass(item, BaseTool)
-                            and item is not BaseTool
-                        ):
-                            tool_instance = item()  # Instantiate the tool
-                            if tool_instance.is_callable:
-                                self.tools[tool_instance.name] = FunctionTool(
-                                    tool_instance.run,
-                                    description=tool_instance.description,
-                                    name=tool_instance.name,
-                                )
-                            else:
-                                logger.warning(
-                                    f"Tool {tool_instance.name} not loaded due to "
-                                    f"setup failure: {tool_instance.load_error}"
-                                )
-                except Exception as e:
-                    logger.warning(f"Failed to load tool module {filename[:-3]}: {e}")
+        if tools_directory is None:
+            # Load only default tools or none at all
+            self.tools = load_tools(None) if load_default_tools else {}
+        else:
+            # Load custom tools; optionally merge default tools (custom overrides defaults)
+            custom_tools = load_tools(tools_directory)
+            if load_default_tools:
+                default_tools = load_tools(None)
+                self.tools = {**default_tools, **custom_tools}
+            else:
+                self.tools = custom_tools
 
     def new_agent(
         self, agent_name, model_name, prompt, tools: list | None = None
@@ -632,8 +596,10 @@ class AutogenManager:
                 raise ValueError(
                     f"Agent '{agent_name}' must be a dict, got {type(agent_data)}"
                 )
+            if "type" not in agent_data:
+                raise ValueError(f"Agent '{agent_name}' missing required 'type' field")
             # 'prompt' is not required for team agents
-            if agent_data["type"] == "agent" and "prompt" not in agent_data:
+            if agent_data.get("type") == "agent" and "prompt" not in agent_data:
                 raise ValueError(
                     f"Agent '{agent_name}' missing required 'prompt' field"
                 )
@@ -694,10 +660,13 @@ class AutogenManager:
                 ):
                     tools = None
                 else:
-                    # load the tools
+                    # load the tools (skip unknown tool ids gracefully)
                     tools = []
                     for tool in subagent_data["tools"]:
-                        tools.append(self.tools[tool])
+                        if tool in self.tools:
+                            tools.append(self.tools[tool])
+                        else:
+                            logger.warning(f"Tool {tool} not found; skipping.")
 
                 agents.append(
                     AssistantAgent(
