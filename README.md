@@ -96,14 +96,12 @@ Format: `models.type.model_id` — `model_id` will appear in list of available 
 
 ---
 
-### Memory Model Configuration (Currently Disabled)
+### Mini Model Configuration
 
-mchat can maintain conversational memory for long chats. When memory size exceeds model limits, conversations are summarized using a designated model (ideally, a cost-effective one).
+mchat has internal utilites that will use an LLM for simple tasks such as deciding when a conversation is complete or generating short summary labels for a conversation.  If mini_model is specified it will use this model, otherwise it will use the default.
 
 Configurable properties:
-- `memory_model`: Model ID used for memory (should match one in `models`)
-- `memory_model_temperature`: Temperature for memory summarization
-- `memory_model_max_tokens`: Token limit for memory model
+- `mini_model`: Model ID used for for internal utilities
 
 ---
 
