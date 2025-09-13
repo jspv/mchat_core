@@ -13,8 +13,8 @@ from dynaconf import Dynaconf, DynaconfFormatError
 from openai import OpenAI
 from pydantic.networks import HttpUrl
 
+from . import config as _config
 from .azure_auth import AzureADTokenProvider
-from .config import get_settings
 from .logging_utils import get_logger, trace  # noqa: F401
 
 logger = get_logger(__name__)
@@ -217,7 +217,7 @@ class ModelManager:
                 # make deep copy of settings_conf to avoid modifying the original
                 settings = copy.deepcopy(settings_conf)
             else:
-                settings = get_settings(settings_files=settings_files)
+                settings = _config.get_settings(settings_files=settings_files)
 
             self.model_configs = settings["models"].to_dict()
             self.config: dict[str, ModelConfig] = {}

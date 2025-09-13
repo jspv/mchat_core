@@ -45,7 +45,6 @@ from autogen_core.models import (
     SystemMessage,
     UserMessage,
 )
-from autogen_core.tools import FunctionTool
 from autogen_ext.agents.web_surfer import MultimodalWebSurfer
 from autogen_ext.models.openai._openai_client import (
     AzureOpenAIChatCompletionClient,
@@ -124,7 +123,7 @@ class AutogenManager:
         agent_paths: list[str] | None = None,
         stream_tokens: bool = None,
         tools_directory: str | None = None,
-        load_default_tools: bool = True,
+        load_default_tools: bool = False,
     ):
         # Ensure that exactly one of agents or agent_paths is provided
         if (agents is None) == (
@@ -150,7 +149,9 @@ class AutogenManager:
             message_callback = noop_callback
 
         self.mm = ModelManager()
-        self._message_callback = message_callback  # send messages back to the UI
+        # Default callback and streaming setting for sessions
+        self._default_message_callback = message_callback
+        self._default_stream_tokens = stream_tokens
 
         # Load agents
         self._agents = agents if agents is not None else {}
@@ -161,22 +162,14 @@ class AutogenManager:
             if val.get("chooseable", True)
         ]
 
-        # streaming
-        self._stream_tokens = stream_tokens  # streaming currently enabled or not
-        self._streaming_preference = stream_tokens  # remember the last setting
+        # No implicit session tracking on manager
 
-        # model being used by the agent, will be set when a new conversation is started
-        self._model_id = None
-
-        # Will be used to cancel ongoing tasks
-        self._cancelation_token = None
-
-        # Inialize available tools
+        # Initialize available tools
         if tools_directory is None:
             # Load only default tools or none at all
             self.tools = load_tools(None) if load_default_tools else {}
         else:
-            # Load custom tools; optionally merge default tools (custom overrides defaults)
+            # Load custom tools; optionally merge default tools
             custom_tools = load_tools(tools_directory)
             if load_default_tools:
                 default_tools = load_tools(None)
@@ -191,18 +184,6 @@ class AutogenManager:
         pass
 
     @property
-    def prompt(self) -> str:
-        """Returns the current prompt"""
-        # return self.agent.prompt
-        return self._prompt
-
-    @property
-    def description(self) -> str:
-        """Returns the current prompt"""
-        # return self.agent.prompt
-        return self._description
-
-    @property
     def agents(self) -> dict:
         """Return the agent structure"""
         return self._agents
@@ -212,303 +193,42 @@ class AutogenManager:
         """Return list of agents the UI can choose from"""
         return self._chooseable_agents
 
-    @property
-    def model(self) -> str:
-        """Returns the current model"""
-        return self._model_id
-
-    @property
-    def stream_tokens(self) -> bool | None:
-        """Are we currently streaming tokens if they are supported
-
-        Returns:
-        -------
-        bool | None
-            True if currently streaming tokens, False if not, None if not supported
-        """
-
-        return self._stream_tokens
-
-    @stream_tokens.setter
-    def stream_tokens(self, value: bool) -> None:
-        """enable or disable token streaming"""
-
-        if not isinstance(value, bool):
-            raise ValueError("stream_tokens must be a boolean")
-
-        # If currently disabled by logic, don't allow it to be enabled
-        if self._stream_tokens is None:
-            logger.info(
-                f"token streaming disabled, setting stream_tokens to {value} ignored"
-            )
-            return
-
-        # This remembers the last setting, so that if the model doesn't support
-        # streaming, we know what to return to when switching to one that does
-        self._streaming_preference = value
-        self._stream_tokens = value
-        self._set_agent_streaming()
-
-    def _set_agent_streaming(self) -> None:
-        """Reset the streaming callback for the agent"""
-
-        value = self._stream_tokens
-
-        if hasattr(self, "agent"):
-            # HACK TODO - this needs to becone a public toggle
-            self.agent._model_client_stream = value
-            logger.info(f"token streaming for {self.agent.name} set to {value}")
-        else:
-            raise ValueError("stream_tokens can only be set if there is an agent")
-
-    def cancel(self) -> None:
-        """Cancel the current conversation"""
-        if self._cancelation_token:
-            self._cancelation_token.cancel()
-
-    def terminate(self) -> None:
-        """Terminate the current conversation"""
-        if hasattr(self, "terminator"):
-            self.terminator.set()
-
-    def clear_memory(self) -> None:
-        """Clear the agent's model context memory"""
-        if hasattr(self, "agent") and hasattr(self.agent, "_model_context"):
-            try:
-                ctx = self.agent._model_context
-                clear = getattr(ctx, "clear", None)
-                if callable(clear):
-                    clear()
-            except Exception:
-                logger.debug("Failed to clear model context", exc_info=True)
-
-    async def update_memory(self, state: dict) -> None:
-        await self.agent.load_state(state)
-
-    async def get_memory(self) -> Mapping[str, Any]:
-        """Returns the current memory in a recoverable text format"""
-        return await self.agent.save_state()
-
     async def new_conversation(
         self,
         agent: str,
-        model_id: str = None,
-        temperature: float = None,
-        stream_tokens: bool = True,
-    ) -> None:
-        """Intialize a new conversation with the given agent and model
+        model_id: str | None = None,
+        temperature: float | None = None,
+        stream_tokens: bool | None = None,
+        message_callback: Callable | None = None,
+    ) -> "AgentSession":
+        """Create and return a new per-agent conversation session.
 
-        Parameters
-        ----------
-        agent : str
-            agent to use
-        model_id : str, optional
-            model to use (overrides agent config/default)
-        temperature : float, optional
-            temperature to use (overrides agent config/default)
-        stream_tokens: bool, optional
-            if the model should stream tokens back to the UI
+        The returned AgentSession encapsulates state and methods such as ask(),
+        memory management, streaming control, and cancel/terminate.
+
+        Args:
+            stream_tokens: Override manager default if provided
+            message_callback: Override manager default if provided
         """
-
-        """
-        Thoughts:  model_id and temperature will be for the agent that is interacting
-        with the user.  For single-model agents, this will be the same as going straight
-        to the model.
-
-        For multi-agent teams, it will only affect the agent that is currently
-        interacting with the user.  The other agents in the team will have their own
-        model_id and temperature settings from the agent dictionary, or will use the
-        default.
-        """
-
-        agent_data = self._agents[agent]
-
-        # Use model from argument, agent config, or default
-        if model_id is None:
-            model_id = agent_data.get("model", self.mm.default_chat_model)
-        # Use temperature from argument, agent config, or default
-        if temperature is None:
-            temperature = agent_data.get(
-                "temperature", self.mm.default_chat_temperature
-            )
-
-        self._prompt = agent_data["prompt"] if "prompt" in agent_data else ""
-        self._description = (
-            agent_data["description"] if "description" in agent_data else ""
+        # Use session-specific values or fall back to manager defaults
+        effective_stream_tokens = (
+            stream_tokens if stream_tokens is not None else self._default_stream_tokens
+        )
+        effective_callback = (
+            message_callback
+            if message_callback is not None
+            else self._default_message_callback
         )
 
-        if "type" in agent_data and agent_data["type"] == "team":
-            # Team-based Agents
-            self.agent_team = self._create_team(agent_data["team_type"], agent_data)
-            self.agent = self.agent_team._participants[0]
-
-            # currently not streaming tokens for team agents
-            self._stream_tokens = None
-            logger.info("token streaming for team-based agents currently disabled")
-
-        else:
-            # Solo Agent
-            self.model_client = self.mm.open_model(model_id)
-            self._model_id = model_id
-
-            # don't use tools if the model does't support them
-            if (
-                not self.mm.get_tool_support(model_id)
-                or not self.model_client.model_info["function_calling"]
-                or "tools" not in agent_data
-            ):
-                tools = None
-            else:
-                tools = [
-                    self.tools[tool]
-                    for tool in agent_data["tools"]
-                    if tool in self.tools
-                ]
-
-            # Build the model_context
-            model_context = UnboundedChatCompletionContext()
-
-            # system message if supported
-            if self.mm.get_system_prompt_support(model_id):
-                system_message = self._prompt
-            else:
-                system_message = None
-                await model_context.add_message(
-                    UserMessage(content=self._prompt, source="user")
-                )
-
-            # Load Extra multi-shot messages if they exist
-            if "extra_context" not in self._agents[agent]:
-                self._agents[agent]["extra_context"] = []
-            for extra in self._agents[agent]["extra_context"]:
-                if extra[0] == "ai":
-                    await model_context.add_message(
-                        AssistantMessage(content=extra[1], source=agent)
-                    )
-                elif extra[0] == "human":
-                    await model_context.add_message(
-                        UserMessage(content=extra[1], source="user")
-                    )
-                elif extra[0] == "system":
-                    raise ValueError(f"system message not implemented: {extra[0]}")
-                else:
-                    raise ValueError(f"Unknown extra context type {extra[0]}")
-
-            # build the agent
-            if "type" in agent_data and agent_data["type"] == "autogen-agent":
-                if agent_data["name"] == "websurfer":
-                    self.agent = MultimodalWebSurfer(
-                        model_client=self.model_client,
-                        name=agent,
-                    )
-                    # not streaming builtin autogen agents right now
-                    logger.info(
-                        f"token streaming agent:{agent} disabled or not supported"
-                    )
-                    self._stream_tokens = None
-
-                else:
-                    raise ValueError(f"Unknown autogen agent type for agent:{agent}")
-            else:
-                self.agent = AssistantAgent(
-                    name=agent,
-                    model_client=self.model_client,
-                    tools=tools,
-                    model_context=model_context,
-                    system_message=system_message,
-                    model_client_stream=True,
-                    reflect_on_tool_use=True,
-                )
-
-                messages = await self.agent._model_context.get_messages()
-                logger.trace(f"messages: {messages}")
-
-            # Set streaming to the current preference (if supported)
-
-            # disable streaming if not supported by the model, otherwse use preference
-            if not self.mm.get_streaming_support(model_id):
-                self._stream_tokens = None
-                self._set_agent_streaming()
-                logger.info(f"token streaming for model {model_id} not supported")
-            else:
-                self._stream_tokens = self._streaming_preference
-                self._set_agent_streaming()
-
-            # Build the termination conditions
-            terminators = []
-            terminators.append(
-                StopMessageTermination(),
-            )
-            max_rounds = agent_data["max_rounds"] if "max_rounds" in agent_data else 5
-            terminators.append(MaxMessageTermination(max_rounds))
-            if "termination_message" in agent_data:
-                terminators.append(
-                    TextMentionTermination(agent_data["termination_message"])
-                )
-            self.terminator = ExternalTermination()  # for custom terminations
-            terminators.append(self.terminator)
-
-            # new - defaulting oneshot to false
-            self.oneshot = (
-                False if "oneshot" not in agent_data else agent_data["oneshot"]
-            )
-
-            # create the group chat
-
-            # Smart terminator to reflect on the conversation if not complete
-            terminators.append(
-                SmartReflectorTermination(
-                    model_client=self.mm.open_model(self.mm.default_memory_model),
-                    oneshot=self.oneshot,
-                    agent_name=agent,
-                )
-            )
-
-            logger.debug("creating RR group chat")
-            termination = reduce(lambda x, y: x | y, terminators)
-
-            self.agent_team = RoundRobinGroupChat(
-                participants=[self.agent],
-                termination_condition=termination,
-            )
-
-    async def ask(self, task: str) -> TaskResult:
-        self._cancelation_token = CancellationToken()
-
-        try:
-            result: TaskResult = await self._consume_agent_stream(
-                agent_runner=self.agent_team.run_stream,
-                oneshot=self.oneshot,
-                task=task,
-                cancellation_token=self._cancelation_token,
-            )
-        except Exception as e:
-            logger.error(f"Error in agent stream: {e}")
-            result = TaskResult(
-                messages=[
-                    TextMessage(  # ensure a sequence of TextMessage
-                        source="System",
-                        content=f"Error in agent stream: {e}",
-                    )
-                ],
-                stop_reason="error",
-            )
-            await self._message_callback(
-                "Error in response from AI, see debug", flush=True
-            )
-
-        self._cancelation_token = None
-        if result.stop_reason.startswith("Exception occurred"):
-            # notifiy the UI that an exception occurred
-            logger.warning(
-                f"Exception occurred talking to the AI: {result.stop_reason}"
-            )
-            await self._message_callback(
-                "Error in response from AI, see debug", flush=True
-            )
-        logger.debug(f"Final result: {result.stop_reason}")
-        await asyncio.sleep(0.1)  # Allow for autogen to cleanup/end the conversation
-        return result
+        session = await AgentSession.create(
+            manager=self,
+            agent_name=agent,
+            model_id=model_id,
+            temperature=temperature,
+            stream_tokens=effective_stream_tokens,
+            message_callback=effective_callback,
+        )
+        return session
 
     def _load_agents(self, paths: list[str]) -> dict:
         """Read the agent definition files and load the agents, or parse agent
@@ -616,33 +336,366 @@ class AutogenManager:
                     )
         return agents
 
+
+class AgentManager(AutogenManager):
+    """Alias for AutogenManager"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+class AgentSession:
+    """A per-agent, per-conversation session.
+
+    Encapsulates the active autogen agent/team, model context, streaming,
+    termination, and memory for this conversation.
+
+    **IMPORTANT**: Do not instantiate this class directly. Use the async factory
+    method `AgentSession.create()` instead, which properly handles all async
+    initialization required for the session.
+
+    Example:
+        # Correct usage:
+        session = await AgentSession.create(
+            manager=my_manager,
+            agent_name="my_agent"
+        )
+
+        # Incorrect usage (will raise RuntimeError):
+        session = AgentSession(manager=my_manager, agent_name="my_agent")
+    """
+
+    def __init__(
+        self,
+        manager: AutogenManager,
+        agent_name: str | None = None,
+        model_id: str | None = None,
+        temperature: float | None = None,
+        stream_tokens: bool = True,
+        message_callback: Callable | None = None,
+        _internal: bool = False,
+    ) -> None:
+        """Initialize AgentSession - Internal use only.
+
+        **WARNING**: This constructor is for internal use only. Direct instantiation
+        will result in an incomplete, non-functional session. Always use
+        AgentSession.create() for proper initialization.
+
+        Args:
+            _internal: Private flag to prevent direct instantiation. Only the
+                      create() factory method should set this to True.
+
+        Raises:
+            RuntimeError: If called directly (when _internal=False)
+        """
+        if not _internal:
+            raise RuntimeError(
+                "AgentSession cannot be instantiated directly. "
+                "Use 'await AgentManager.new_conversation(...)' instead for proper "
+                " initialization."
+            )
+        self.manager = manager
+        self.agent_name = agent_name
+        self._model_id = model_id
+        self._temperature = temperature
+        self._stream_tokens = stream_tokens
+        self._streaming_preference = stream_tokens
+        # per-session callback; use provided callback or fall back to manager default
+        if message_callback is not None:
+            self._message_callback = message_callback
+        else:
+            self._message_callback = getattr(manager, "_default_message_callback", None)
+            # If still None, create a noop callback
+            if self._message_callback is None:
+
+                async def noop_callback(*args, **kwargs):
+                    pass
+
+                self._message_callback = noop_callback
+
+        # Will be used to cancel ongoing tasks for this session
+        self._cancelation_token: CancellationToken | None = None
+
+        # These will be set during initialization
+        self.agent = None
+        self.agent_team = None
+        self.terminator = None
+        self.oneshot = False
+        self._prompt = ""
+        self._description = ""
+
+    @classmethod
+    async def create(
+        cls,
+        manager: AutogenManager,
+        agent_name: str | None = None,
+        model_id: str | None = None,
+        temperature: float | None = None,
+        stream_tokens: bool = True,
+        message_callback: Callable | None = None,
+    ) -> "AgentSession":
+        """Async factory method to create and  initialize an AgentSession.
+
+        Args:
+            manager: The AutogenManager instance
+            agent_name: Name of the agent to create session for
+            model_id: Override model for this session
+            temperature: Override temperature for this session
+            stream_tokens: Override streaming setting for this session
+            message_callback: Override callback for this session
+
+        Returns:
+            An initialized AgentSession
+
+        Example:
+            session = await AgentSession.create(
+                manager=my_manager,
+                agent_name="helpful_assistant"
+            )
+        """
+        session = cls(
+            manager=manager,
+            agent_name=agent_name,
+            model_id=model_id,
+            temperature=temperature,
+            stream_tokens=stream_tokens,
+            message_callback=message_callback,
+            _internal=True,  # Allow internal instantiation
+        )
+        await session._initialize()
+        return session
+
+    async def _initialize(self) -> None:
+        if self.agent_name is None:
+            # nothing to initialize
+            return
+
+        agents = self.manager._agents
+        mm = self.manager.mm
+        tools_map = self.manager.tools
+
+        agent = self.agent_name
+        agent_data = agents[agent]
+
+        # Use model from argument, agent config, or default
+        if self._model_id is None:
+            self._model_id = agent_data.get("model", mm.default_chat_model)
+        # Use temperature from argument, agent config, or default
+        if self._temperature is None:
+            self._temperature = agent_data.get(
+                "temperature", mm.default_chat_temperature
+            )
+
+        self._prompt = agent_data.get("prompt", "")
+        self._description = agent_data.get("description", "")
+
+        if agent_data.get("type") == "team":
+            # Team-based Agents
+            self.agent_team = self._create_team(agent_data["team_type"], agent_data)
+            # Assign first participant as primary agent for name/stream toggles
+            self.agent = self.agent_team._participants[0]
+
+            # currently not streaming tokens for team agents
+            self._stream_tokens = None
+            self.manager._stream_tokens = None
+            logger.info("token streaming for team-based agents currently disabled")
+
+        else:
+            # Solo Agent
+            model_client = mm.open_model(self._model_id)
+
+            # don't use tools if the model does't support them
+            if (
+                not mm.get_tool_support(self._model_id)
+                or not model_client.model_info.get("function_calling", False)
+                or "tools" not in agent_data
+            ):
+                tools = None
+            else:
+                tools = [tools_map[t] for t in agent_data["tools"] if t in tools_map]
+
+            # Build the model_context
+            model_context = UnboundedChatCompletionContext()
+
+            # system message if supported
+            if mm.get_system_prompt_support(self._model_id):
+                system_message = self._prompt
+            else:
+                system_message = None
+                await model_context.add_message(
+                    UserMessage(content=self._prompt, source="user")
+                )
+
+            # Load Extra multi-shot messages if they exist
+            if "extra_context" not in agents[agent]:
+                agents[agent]["extra_context"] = []
+            for extra in agents[agent]["extra_context"]:
+                if extra[0] == "ai":
+                    await model_context.add_message(
+                        AssistantMessage(content=extra[1], source=agent)
+                    )
+                elif extra[0] == "human":
+                    await model_context.add_message(
+                        UserMessage(content=extra[1], source="user")
+                    )
+                elif extra[0] == "system":
+                    raise ValueError(f"system message not implemented: {extra[0]}")
+                else:
+                    raise ValueError(f"Unknown extra context type {extra[0]}")
+
+            # build the agent
+            if agent_data.get("type") == "autogen-agent":
+                if agent_data.get("name") == "websurfer":
+                    self.agent = MultimodalWebSurfer(
+                        model_client=model_client,
+                        name=agent,
+                    )
+                    # not streaming builtin autogen agents right now
+                    logger.info(
+                        f"token streaming agent:{agent} disabled or not supported"
+                    )
+                    self._stream_tokens = None
+                    self.manager._stream_tokens = None
+                else:
+                    raise ValueError(f"Unknown autogen agent type for agent:{agent}")
+            else:
+                self.agent = AssistantAgent(
+                    name=agent,
+                    model_client=model_client,
+                    tools=tools,
+                    model_context=model_context,
+                    system_message=system_message,
+                    model_client_stream=True,
+                    reflect_on_tool_use=True,
+                )
+
+                messages = await self.agent._model_context.get_messages()
+                logger.trace(f"messages: {messages}")
+
+            # disable streaming if not supported by the model, otherwise use preference
+            if not mm.get_streaming_support(self._model_id):
+                self._stream_tokens = None
+                try:
+                    self.agent._model_client_stream = None
+                except Exception:
+                    pass
+                self.manager._stream_tokens = None
+                logger.info(f"token streaming for model {self._model_id} not supported")
+            else:
+                self._stream_tokens = self._streaming_preference
+                try:
+                    self.agent._model_client_stream = self._stream_tokens
+                except Exception:
+                    pass
+                self.manager._stream_tokens = self._stream_tokens
+
+            # Build the termination conditions
+            terminators = [StopMessageTermination()]
+            max_rounds = agent_data.get("max_rounds", 5)
+            terminators.append(MaxMessageTermination(max_rounds))
+            if "termination_message" in agent_data:
+                terminators.append(
+                    TextMentionTermination(agent_data["termination_message"])
+                )
+            self.terminator = ExternalTermination()  # for custom terminations
+            terminators.append(self.terminator)
+
+            # default oneshot to false unless specified
+            self.oneshot = agent_data.get("oneshot", False)
+
+            # Smart terminator to reflect on the conversation if not complete
+            terminators.append(
+                SmartReflectorTermination(
+                    model_client=mm.open_model(mm.default_memory_model),
+                    oneshot=self.oneshot,
+                    agent_name=agent,
+                )
+            )
+
+            logger.debug("creating RR group chat")
+            termination = reduce(lambda x, y: x | y, terminators)
+
+            self.agent_team = RoundRobinGroupChat(
+                participants=[self.agent],
+                termination_condition=termination,
+            )
+
+    # --- Agent-specific properties (session-scoped)
+
+    @property
+    def prompt(self) -> str:
+        """Returns the current prompt for this session's agent"""
+        return getattr(self, "_prompt", "")
+
+    @property
+    def description(self) -> str:
+        """Returns the current description for this session's agent"""
+        return getattr(self, "_description", "")
+
+    @property
+    def model(self) -> str | None:
+        """Returns the current model id for this session"""
+        return getattr(self, "_model_id", None)
+
+    @property
+    def stream_tokens(self) -> bool | None:
+        """Current token streaming state for this session.
+
+        Returns True/False, or None when unsupported by the model.
+        """
+        return self._stream_tokens
+
+    @stream_tokens.setter
+    def stream_tokens(self, value: bool) -> None:
+        """Enable or disable token streaming for this session.
+
+        If the model doesn't support streaming, value is ignored and stays None.
+        """
+        if not isinstance(value, bool):
+            raise ValueError("stream_tokens must be a boolean")
+
+        # If currently disabled by logic, don't allow it to be enabled
+        if self._stream_tokens is None:
+            logger.info(
+                f"token streaming disabled, setting stream_tokens to {value} ignored"
+            )
+            return
+
+        # Remember the last setting; apply to agent if available
+        self._streaming_preference = value
+        self._stream_tokens = value
+        try:
+            if hasattr(self, "agent") and self.agent is not None:
+                self.agent._model_client_stream = value
+                logger.info(
+                    "token streaming for %s set to %s",
+                    getattr(self.agent, "name", "agent"),
+                    value,
+                )
+        except Exception:
+            logger.debug("unable to set agent streaming flag", exc_info=True)
+
     def _create_team(
         self, team_type: str, agent_data: dict
     ) -> RoundRobinGroupChat | SelectorGroupChat | MagenticOneGroupChat:
-        """Create a team of agents
-
-        Parameters
-        ----------
-        team_type : str
-            type of team to create
-        agent_data : dict
-            description of the agent team
-        """
-
         # agent_data needs to be a team
         if "type" not in agent_data or agent_data["type"] != "team":
             raise ValueError("agent_data 'type' for team must be 'team'")
 
+        mm = self.manager.mm
+        tools_map = self.manager.tools
+        agents_dict = self.manager._agents
+
         # build the agents
         agents = []
         for agent in agent_data["agents"]:
-            subagent_data = self._agents[agent]
+            subagent_data = agents_dict[agent]
             if "model" not in subagent_data:
-                subagent_data["model"] = self.mm.default_chat_model
-            model_client = self.mm.open_model(subagent_data["model"])
+                subagent_data["model"] = mm.default_chat_model
+            model_client = mm.open_model(subagent_data["model"])
 
-            if "type" in subagent_data and subagent_data["type"] == "autogen-agent":
-                if subagent_data["name"] == "websurfer":
+            if subagent_data.get("type") == "autogen-agent":
+                if subagent_data.get("name") == "websurfer":
                     agents.append(
                         MultimodalWebSurfer(
                             model_client=model_client,
@@ -654,8 +707,8 @@ class AutogenManager:
             else:
                 # don't use tools if the model does't support them
                 if (
-                    not self.mm.get_tool_support(subagent_data["model"])
-                    or not model_client.model_info["function_calling"]
+                    not mm.get_tool_support(subagent_data["model"])
+                    or not model_client.model_info.get("function_calling", False)
                     or "tools" not in subagent_data
                 ):
                     tools = None
@@ -663,8 +716,8 @@ class AutogenManager:
                     # load the tools (skip unknown tool ids gracefully)
                     tools = []
                     for tool in subagent_data["tools"]:
-                        if tool in self.tools:
-                            tools.append(self.tools[tool])
+                        if tool in tools_map:
+                            tools.append(tools_map[tool])
                         else:
                             logger.warning(f"Tool {tool} not found; skipping.")
 
@@ -679,9 +732,9 @@ class AutogenManager:
                     )
                 )
 
-        # constuct the team
+        # construct the team
         terminators = []
-        max_rounds = agent_data["max_rounds"] if "max_rounds" in agent_data else 5
+        max_rounds = agent_data.get("max_rounds", 5)
         terminators.append(MaxMessageTermination(max_rounds))
         if "termination_message" in agent_data:
             terminators.append(
@@ -700,9 +753,9 @@ class AutogenManager:
             return RoundRobinGroupChat(agents, termination_condition=termination)
         elif team_type == "selector":
             if "team_model" not in agent_data:
-                team_model = self.mm.open_model(self.mm.default_chat_model)
+                team_model = mm.open_model(mm.default_chat_model)
             else:
-                team_model = self.mm.open_model(agent_data["team_model"])
+                team_model = mm.open_model(agent_data["team_model"])
             allow_repeated_speaker = agent_data.get("allow_repeated_speaker", False)
 
             if "selector_prompt" in agent_data:
@@ -722,14 +775,77 @@ class AutogenManager:
                 )
         elif team_type == "magnetic_one":
             if "team_model" not in agent_data:
-                team_model = self.mm.open_model(self.mm.default_chat_model)
+                team_model = mm.open_model(mm.default_chat_model)
             else:
-                team_model = self.mm.open_model(agent_data["team_model"])
+                team_model = mm.open_model(agent_data["team_model"])
             return MagenticOneGroupChat(
                 agents, model_client=team_model, termination_condition=termination
             )
         else:
             raise ValueError(f"Unknown team type {team_type}")
+
+    async def ask(self, task: str) -> TaskResult:
+        self._cancelation_token = CancellationToken()
+
+        try:
+            result: TaskResult = await self._consume_agent_stream(
+                agent_runner=self.agent_team.run_stream,
+                oneshot=self.oneshot,
+                task=task,
+                cancellation_token=self._cancelation_token,
+            )
+        except Exception as e:
+            logger.error(f"Error in agent stream: {e}")
+            result = TaskResult(
+                messages=[
+                    TextMessage(  # ensure a sequence of TextMessage
+                        source="System",
+                        content=f"Error in agent stream: {e}",
+                    )
+                ],
+                stop_reason="error",
+            )
+            await self._message_callback(
+                "Error in response from AI, see debug", flush=True
+            )
+
+        self._cancelation_token = None
+        if result.stop_reason.startswith("Exception occurred"):
+            # notify the UI that an exception occurred
+            logger.warning(
+                f"Exception occurred talking to the AI: {result.stop_reason}"
+            )
+            await self._message_callback(
+                "Error in response from AI, see debug", flush=True
+            )
+        logger.debug(f"Final result: {result.stop_reason}")
+        await asyncio.sleep(0.1)  # Allow for autogen to cleanup/end the conversation
+        return result
+
+    def cancel(self) -> None:
+        if self._cancelation_token:
+            self._cancelation_token.cancel()
+
+    def terminate(self) -> None:
+        if hasattr(self, "terminator") and self.terminator:
+            self.terminator.set()
+
+    async def clear_memory(self) -> None:
+        """Clear the agent's model context memory (async-only)."""
+        if hasattr(self, "agent") and hasattr(self.agent, "_model_context"):
+            try:
+                ctx = self.agent._model_context
+                clear = getattr(ctx, "clear", None)
+                if callable(clear):
+                    await clear()
+            except Exception:
+                logger.debug("Failed to clear model context", exc_info=True)
+
+    async def update_memory(self, state: dict) -> None:
+        await self.agent.load_state(state)
+
+    async def get_memory(self) -> Mapping[str, Any]:
+        return await self.agent.save_state()
 
     async def _consume_agent_stream(
         self,
@@ -738,8 +854,6 @@ class AutogenManager:
         task: str,
         cancellation_token: CancellationToken,
     ) -> TaskResult:
-        """Run the agent team in streaming mode, handle responses, and return
-        final TaskResult."""
         try:
             async for response in agent_runner(
                 task=task, cancellation_token=cancellation_token
@@ -837,13 +951,11 @@ class AutogenManager:
         self, response: TextMessage, oneshot: bool
     ) -> TaskResult | None:
         if response.source == "user":
-            # This is presumably just an echo of the user’s prompt
-            return
+            return None
 
         logger.trace(f"TextMessage from {response.source}: {response.content}")
 
-        # only show the message if we're not streaming, otherwise the streaming
-        # will handle it
+        # Only show the message if we're not streaming; otherwise streaming handles it
         if not self._stream_tokens:
             await self._message_callback(
                 response.content, agent=response.source, complete=True
@@ -880,13 +992,6 @@ class AutogenManager:
         await self._message_callback(
             response.content, agent=response.source, complete=True
         )
-
-
-class AgentManager(AutogenManager):
-    """Alias for AutogenManager"""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
 
 class LLMTools:

@@ -122,13 +122,79 @@ Some sensitive config settings (like API keys) should be in `.secrets.toml`:
 
 ## Agents & Teams
 
-mchat provides:
+mchat_core provides a session-based agent management system where each conversation is encapsulated in an `AgentSession` object. This allows for:
+
+- Multiple concurrent conversations with different agents
+- Per-session state management (memory, streaming settings, etc.)
+- Clean separation between agent definitions and active conversations
+
+### Basic Usage
+
+```python
+from mchat_core.agent_manager import AutogenManager
+
+# Initialize with agent definitions
+manager = AutogenManager(agent_paths=["agents.yaml"])
+
+# Create a new conversation session (returns AgentSession)
+session = await manager.new_conversation("my_agent")
+
+# Use the session for conversation
+result = await session.ask("Hello, how can you help me?")
+
+# Each session maintains its own state
+await session.clear_memory()  # Clear this session's memory
+session.cancel()        # Cancel ongoing operations for this session
+```
+
+### Agent Configuration
+
+mchat_core provides:
 - A default persona
 - Example agents: *linux computer* & *financial manager*
 - Example teams: round-robin and selector
 
 You can add more agents and teams at the top level in `agents.yaml` (same directory as this README), following the structure in `mchat/default_personas.yaml`.  
 When configuring personas, the `extra_context` list lets you define multi-shot prompts—see the `linux computer` persona in `mchat/default_personas.json` for an example.
+
+### Session Management
+
+**Important**: Always use `manager.new_conversation()` to create sessions. Direct instantiation of `AgentSession` is not supported and will raise a `RuntimeError` with guidance on proper usage.
+
+### Key Features
+
+- **Concurrent Conversations**: Multiple sessions can run simultaneously with different agents
+- **Per-Session State**: Each session maintains its own memory, streaming settings, and context
+- **Session-Specific Overrides**: Override model, temperature, streaming, and callbacks per session
+- **Independent Control**: Cancel, terminate, or clear memory for individual sessions
+- **Property Access**: Access agent properties (prompt, description, model) from the session
+
+### API Reference
+
+```python
+# Create session
+session = await manager.new_conversation(
+    agent="agent_name",
+    model_id="gpt-4o",           # Optional: override agent's default model
+    temperature=0.7,             # Optional: override agent's default temperature  
+    stream_tokens=True,          # Optional: override manager default
+    message_callback=my_callback # Optional: override manager default
+)
+
+# Session methods
+result = await session.ask("Your question here")
+session.cancel()                    # Cancel ongoing operations
+session.terminate()                 # Terminate conversation
+await session.clear_memory()             # Clear conversation memory
+memory = await session.get_memory() # Get current memory state
+
+# Session properties (read-only)
+session.agent_name    # Name of the agent
+session.description   # Agent description
+session.prompt        # Agent system prompt
+session.model         # Current model ID
+session.stream_tokens # Current streaming state (can be modified)
+```
 
 ## Contributing
 

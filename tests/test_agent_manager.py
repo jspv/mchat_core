@@ -38,7 +38,7 @@ def dynaconf_test_settings(tmp_path, monkeypatch):
         return test_settings
 
     monkeypatch.setattr("mchat_core.config.get_settings", dummy_get_settings)
-    monkeypatch.setenv("DYNACONF_SETTINGS", str(settings_toml))
+    monkeypatch.setenv("SETTINGS_FILE_FOR_DYNACONF", str(settings_toml))
     return test_settings
 
 
@@ -149,18 +149,21 @@ def test_tool_loading_real(dynaconf_test_settings, agents_yaml):
     assert "today" in manager.tools
 
 
-def test_stream_tokens_property(dynaconf_test_settings, agents_yaml, patch_tools):
-    from mchat_core.agent_manager import AutogenManager
+@pytest.mark.asyncio
+async def test_stream_tokens_property(dynaconf_test_settings, agents_yaml, patch_tools):
+    from mchat_core.agent_manager import AutogenManager, AgentSession
 
     manager = AutogenManager(
         message_callback=lambda *a, **kw: None, agent_paths=[agents_yaml]
     )
-    # Add a dummy agent so the setter doesn't error
+    # Use a bare AgentSession with a dummy agent to test the property
     from unittest.mock import MagicMock
 
-    manager.agent = MagicMock(_model_client_stream=True, name="dummy_agent")
-    manager.stream_tokens = False
-    assert not manager.agent._model_client_stream
+    session = await AgentSession.create(manager=manager)
+    session.agent = MagicMock(_model_client_stream=True, name="dummy_agent")
+    session._stream_tokens = True
+    session.stream_tokens = False
+    assert not session.agent._model_client_stream
 
 
 def test_agents_property_and_chooseable(
@@ -307,12 +310,12 @@ def test_new_conversation_model_fallbacks(dynaconf_test_settings, patch_tools):
     # Uses model from agent config
     import asyncio
 
-    asyncio.run(manager.new_conversation(agent="with_model"))
-    assert manager.model == "gpt-4_1"
+    session1 = asyncio.run(manager.new_conversation(agent="with_model"))
+    assert session1.model == "gpt-4_1"
 
     # Uses default when not in agent config
-    asyncio.run(manager.new_conversation(agent="no_model"))
-    assert manager.model == dynaconf_test_settings.defaults.chat_model
+    session2 = asyncio.run(manager.new_conversation(agent="no_model"))
+    assert session2.model == dynaconf_test_settings.defaults.chat_model
 
 
 @pytest.mark.asyncio
@@ -321,7 +324,7 @@ async def test_consume_agent_stream_stopmessage_returns_taskresult(
 ):
     from autogen_agentchat.messages import StopMessage
 
-    from mchat_core.agent_manager import AutogenManager
+    from mchat_core.agent_manager import AutogenManager, AgentSession
 
     async def runner(task: str, cancellation_token):
         yield StopMessage(content="done", source="unit")
@@ -333,7 +336,8 @@ async def test_consume_agent_stream_stopmessage_returns_taskresult(
         "a": {"type": "agent", "description": "d", "prompt": "p"},
     }
     m = AutogenManager(message_callback=cb, agents=agents)
-    result = await m._consume_agent_stream(
+    s = await AgentSession.create(manager=m)
+    result = await s._consume_agent_stream(
         agent_runner=runner, oneshot=False, task="t", cancellation_token=None
     )
     assert result.stop_reason == "presumed done"
@@ -344,7 +348,7 @@ async def test_consume_agent_stream_stopmessage_returns_taskresult(
 async def test_consume_agent_stream_end_of_stream_returns_taskresult(
     dynaconf_test_settings, patch_tools
 ):
-    from mchat_core.agent_manager import AutogenManager
+    from mchat_core.agent_manager import AutogenManager, AgentSession
 
     async def runner(task: str, cancellation_token):
         if False:
@@ -357,7 +361,8 @@ async def test_consume_agent_stream_end_of_stream_returns_taskresult(
         "a": {"type": "agent", "description": "d", "prompt": "p"},
     }
     m = AutogenManager(message_callback=cb, agents=agents)
-    result = await m._consume_agent_stream(
+    s = await AgentSession.create(manager=m)
+    result = await s._consume_agent_stream(
         agent_runner=runner, oneshot=False, task="t", cancellation_token=None
     )
     assert result.stop_reason == "end_of_stream"
@@ -370,7 +375,7 @@ async def test_consume_agent_stream_end_of_stream_returns_taskresult(
 async def test_unknown_event_is_reported_to_callback(
     dynaconf_test_settings, patch_tools
 ):
-    from mchat_core.agent_manager import AutogenManager
+    from mchat_core.agent_manager import AutogenManager, AgentSession
 
     class Unknown:
         def __repr__(self):
@@ -388,10 +393,192 @@ async def test_unknown_event_is_reported_to_callback(
         "a": {"type": "agent", "description": "d", "prompt": "p"},
     }
     m = AutogenManager(message_callback=cb, agents=agents)
+    s = await AgentSession.create(manager=m)
     # It will iterate once, then end and return end_of_stream
-    await m._consume_agent_stream(
+    await s._consume_agent_stream(
         agent_runner=runner, oneshot=False, task="t", cancellation_token=None
     )
     # First callback is "<unknown>", second is repr(response)
     assert any("<unknown>" in str(c) for c in calls)
     assert any("UnknownEvent" in str(c) for c in calls)
+
+
+# --- New tests: verify handler methods call the session-level callback ---
+
+from types import SimpleNamespace
+
+
+@pytest.mark.asyncio
+async def test_handler_text_message_non_stream_uses_session_callback(
+    dynaconf_test_settings,
+):
+    from mchat_core.agent_manager import AutogenManager, AgentSession
+
+    calls = []
+
+    async def cb(msg, **kw):
+        calls.append((msg, kw))
+
+    agents = {"a": {"type": "agent", "description": "d", "prompt": "p"}}
+    m = AutogenManager(message_callback=lambda *a, **kw: None, agents=agents)
+    s = await AgentSession.create(manager=m, message_callback=cb, stream_tokens=False)
+
+    msg = SimpleNamespace(content="hello", source="a")
+    await s._handle_text_message(msg, oneshot=False)
+
+    assert calls and calls[-1][0] == "hello"
+    assert calls[-1][1]["agent"] == "a"
+    assert calls[-1][1]["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_handler_stream_chunk_uses_session_callback(dynaconf_test_settings):
+    from mchat_core.agent_manager import AutogenManager, AgentSession
+
+    calls = []
+
+    async def cb(msg, **kw):
+        calls.append((msg, kw))
+
+    agents = {"a": {"type": "agent", "description": "d", "prompt": "p"}}
+    m = AutogenManager(message_callback=lambda *a, **kw: None, agents=agents)
+    s = await AgentSession.create(manager=m, message_callback=cb)
+
+    evt = SimpleNamespace(content="chunk", source="a")
+    await s._handle_stream_chunk(evt)
+
+    assert calls and calls[-1][0] == "chunk"
+    assert calls[-1][1]["agent"] == "a"
+    assert calls[-1][1]["complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_handler_multi_modal_uses_session_callback(dynaconf_test_settings):
+    from mchat_core.agent_manager import AutogenManager, AgentSession
+
+    calls = []
+
+    async def cb(msg, **kw):
+        calls.append((msg, kw))
+
+    agents = {"a": {"type": "agent", "description": "d", "prompt": "p"}}
+    m = AutogenManager(message_callback=lambda *a, **kw: None, agents=agents)
+    s = await AgentSession.create(manager=m, message_callback=cb)
+
+    evt = SimpleNamespace(content="image-bytes", source="a")
+    await s._handle_multi_modal(evt)
+
+    assert calls and calls[-1][0].startswith("MM:")
+    assert "image-bytes" in calls[-1][0]
+    assert calls[-1][1]["agent"] == "a"
+    assert calls[-1][1]["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_handler_thought_event_uses_session_callback(dynaconf_test_settings):
+    from mchat_core.agent_manager import AutogenManager, AgentSession
+
+    calls = []
+
+    async def cb(msg, **kw):
+        calls.append((msg, kw))
+
+    agents = {"a": {"type": "agent", "description": "d", "prompt": "p"}}
+    m = AutogenManager(message_callback=lambda *a, **kw: None, agents=agents)
+    s = await AgentSession.create(manager=m, message_callback=cb)
+
+    evt = SimpleNamespace(content="thinking...", source="a")
+    await s._handle_thought_event(evt)
+
+    assert calls and "(Thinking: thinking...)" in calls[-1][0]
+    assert calls[-1][1]["agent"] == "a"
+    assert calls[-1][1]["complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_handler_tool_call_request_uses_session_callback(dynaconf_test_settings):
+    from mchat_core.agent_manager import AutogenManager, AgentSession
+
+    calls = []
+
+    async def cb(msg, **kw):
+        calls.append((msg, kw))
+
+    agents = {"a": {"type": "agent", "description": "d", "prompt": "p"}}
+    m = AutogenManager(message_callback=lambda *a, **kw: None, agents=agents)
+    s = await AgentSession.create(manager=m, message_callback=cb)
+
+    tool = SimpleNamespace(name="toolA", arguments={"q": 1})
+    evt = SimpleNamespace(content=[tool], source="a")
+    await s._handle_tool_call_request(evt)
+
+    assert calls and "with arguments:" in calls[-1][0]
+    assert "toolA" in calls[-1][0]
+    assert calls[-1][1]["agent"] == "a"
+
+
+@pytest.mark.asyncio
+async def test_handler_tool_call_execution_uses_session_callback(
+    dynaconf_test_settings,
+):
+    from mchat_core.agent_manager import AutogenManager, AgentSession
+
+    calls = []
+
+    async def cb(msg, **kw):
+        calls.append((msg, kw))
+
+    agents = {"a": {"type": "agent", "description": "d", "prompt": "p"}}
+    m = AutogenManager(message_callback=lambda *a, **kw: None, agents=agents)
+    s = await AgentSession.create(manager=m, message_callback=cb)
+
+    evt = SimpleNamespace(content={"ok": True}, source="a")
+    await s._handle_tool_call_execution(evt)
+
+    assert calls and calls[-1][0] == "done"
+    assert calls[-1][1]["agent"] == "a"
+    assert calls[-1][1]["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_handler_user_input_request_uses_session_callback(
+    dynaconf_test_settings,
+):
+    from mchat_core.agent_manager import AutogenManager, AgentSession
+
+    calls = []
+
+    async def cb(msg, **kw):
+        calls.append((msg, kw))
+
+    agents = {"a": {"type": "agent", "description": "d", "prompt": "p"}}
+    m = AutogenManager(message_callback=lambda *a, **kw: None, agents=agents)
+    s = await AgentSession.create(manager=m, message_callback=cb)
+
+    evt = SimpleNamespace(content="input please", source="a")
+    await s._handle_user_input_request(evt)
+
+    assert calls and calls[-1][0] == "input please"
+    assert calls[-1][1]["agent"] == "a"
+    assert calls[-1][1]["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_text_message_suppressed_when_streaming(dynaconf_test_settings):
+    """When stream_tokens=True, TextMessage should not trigger a full message callback."""
+    from mchat_core.agent_manager import AutogenManager, AgentSession
+
+    calls = []
+
+    async def cb(msg, **kw):
+        calls.append((msg, kw))
+
+    agents = {"a": {"type": "agent", "description": "d", "prompt": "p"}}
+    m = AutogenManager(message_callback=lambda *a, **kw: None, agents=agents)
+    s = await AgentSession.create(manager=m, message_callback=cb, stream_tokens=True)
+
+    # With streaming on, _handle_text_message should not emit a 'complete' message
+    msg = SimpleNamespace(content="hello", source="a")
+    await s._handle_text_message(msg, oneshot=False)
+
+    assert calls == []
