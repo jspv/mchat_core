@@ -4,6 +4,21 @@ extra_agents_file = "agents.yaml"
 google_search_log_file = "google_search.log"
 generate_image_log_file = "generate_image.log"
 
+# KEYS - either here (uncomment) or in .secrets.toml
+
+# OpenAI API
+# openai_api_key = "oai_ai_api_key_goes_here"
+
+# Azure OpenAI API
+# azure_tenant_id = "azure_tenant_id_goes_here"
+# azure_client_id = "azure_client_id_goes_here"
+# azure_client_id_secret = "azure_client_id_secret_goes_here"
+
+
+# Google Search API
+# google_api_key = "google_api_key_goes_here"
+# google_search_engine_id = "google_search_engine_id_goes_here"
+
 # Models
 # sections need to start with model. (with period) and no other periods in the section name
 # model.type.model_id, model_id is what will show in the interface
@@ -191,21 +206,3 @@ rag_llm_api_key = "@format {this.openai_api_key}"
 rag_llm_model = "gpt-4o-mini"
 rag_topdir = "docs"
 docling_artifacts_path = ".docling_artifacts"
-
-
-#
-# either here or in .secrets.toml
-# 
-
-# OpenAI API
-# openai_api_key = "oai_ai_api_key_goes_here"
-
-# Azure OpenAI API
-# azure_tenant_id = "azure_tenant_id_goes_here"
-# azure_client_id = "azure_client_id_goes_here"
-# azure_client_id_secret = "azure_client_id_secret_goes_here"
-
-
-# Google Search API
-# google_api_key = "google_api_key_goes_here"
-# google_search_engine_id = "google_search_engine_id_goes_here"
