@@ -279,11 +279,10 @@ class ModelManager:
         self.default_image_model = settings.get("defaults.image_model", None)
         self.default_embedding_model = settings.get("defaults.embedding_model", None)
         self.default_chat_temperature = settings.defaults.chat_temperature
-        self.default_memory_model = settings.defaults.memory_model
-        self.default_memory_model_temperature = (
-            settings.defaults.memory_model_temperature
+        # Mini model for internal utilities; fall back to chat model if unset
+        self.default_mini_model = (
+            settings.get("defaults.mini_model", None) or self.default_chat_model
         )
-        self.default_memory_model_max_tokens = settings.defaults.memory_model_max_tokens
 
     def filter_models(self, filter_dict):
         return [

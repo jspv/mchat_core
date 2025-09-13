@@ -243,3 +243,53 @@ st_summary_agent:
 
     Your report should end with the word "TERMINATE" to signal the end of the conversation.
   chooseable: false
+
+# === Context examples ===
+
+ctx_unbounded:
+  type: agent
+  description: Example agent using unbounded context (default)
+  prompt: >
+    You are an assistant that remembers the entire conversation. Keep responses concise.
+  context:
+    type: unbounded
+  oneshot: false
+
+ctx_buffered:
+  type: agent
+  description: Example agent using buffered context (keeps only last N messages)
+  prompt: >
+    You are an assistant that only remembers the most recent exchanges.
+  context:
+    type: buffered
+    buffer_size: 5
+  oneshot: false
+
+ctx_token_limited:
+  type: agent
+  description: Example agent using token-limited context
+  prompt: >
+    You are an assistant with a token-limited memory window.
+  context:
+    type: token
+    token_limit: 3000
+  oneshot: false
+
+ctx_head_tail:
+  type: agent
+  description: Example agent using head/tail context (keeps first and last messages)
+  prompt: >
+    You are an assistant that keeps the opening setup and the latest exchanges.
+  context:
+    type: head_tail
+    head_size: 2
+    tail_size: 6
+  oneshot: false
+
+ctx_team_mixed:
+  type: team
+  team_type: round_robin
+  description: Team example mixing different context strategies
+  max_rounds: 8
+  oneshot: false
+  agents: [ctx_buffered, ctx_head_tail]

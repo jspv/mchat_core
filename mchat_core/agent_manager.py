@@ -3,9 +3,7 @@ import json
 import os
 from collections.abc import AsyncIterable, Callable, Mapping, Sequence
 from functools import reduce
-from typing import (
-    Any,
-)
+from typing import Any
 
 import yaml
 from autogen_agentchat.agents import AssistantAgent
@@ -39,12 +37,13 @@ from autogen_agentchat.teams import (
     SelectorGroupChat,
 )
 from autogen_core import CancellationToken
-from autogen_core.model_context import UnboundedChatCompletionContext
-from autogen_core.models import (
-    AssistantMessage,
-    SystemMessage,
-    UserMessage,
+from autogen_core.model_context import (
+    BufferedChatCompletionContext,
+    HeadAndTailChatCompletionContext,
+    TokenLimitedChatCompletionContext,
+    UnboundedChatCompletionContext,
 )
+from autogen_core.models import AssistantMessage, SystemMessage, UserMessage
 from autogen_ext.agents.web_surfer import MultimodalWebSurfer
 from autogen_ext.models.openai._openai_client import (
     AzureOpenAIChatCompletionClient,
@@ -57,6 +56,9 @@ from .terminator import SmartReflectorTermination
 from .tool_utils import load_tools
 
 logger = get_logger(__name__)
+
+
+# default_mini_model is configured (or falls back) in ModelManager
 
 
 label_prompt = (
@@ -75,7 +77,7 @@ summary_prompt = (
 
 class IsCompleteTermination(TerminationCondition):
     mm = ModelManager()
-    memory_model = mm.open_model(mm.default_memory_model)
+    memory_model = mm.open_model(mm.default_mini_model)
     prompt = """ Take a look at the conversation so far. If the conversation has
     reached a natural conclusion and it is the clear that the agent had completed
     the task and has provided a clear response, return True. Otherwise, return False.
@@ -114,7 +116,7 @@ class IsCompleteTermination(TerminationCondition):
 class AutogenManager:
     # createa a model_manager for use with llmtools and AutogenManager
     ag_mm = ModelManager()
-    ag_memory_model = ag_mm.open_model(ag_mm.default_memory_model)
+    ag_memory_model = ag_mm.open_model(ag_mm.default_mini_model)
 
     def __init__(
         self,
@@ -504,6 +506,9 @@ class AgentSession:
             # Solo Agent
             model_client = mm.open_model(self._model_id)
 
+            # Validate context capacity if system prompts are unsupported
+            self._validate_prompt_context(self._model_id, agent_data)
+
             # don't use tools if the model does't support them
             if (
                 not mm.get_tool_support(self._model_id)
@@ -514,17 +519,21 @@ class AgentSession:
             else:
                 tools = [tools_map[t] for t in agent_data["tools"] if t in tools_map]
 
-            # Build the model_context
-            model_context = UnboundedChatCompletionContext()
-
-            # system message if supported
+            # system message if supported; else pass prompt as initial user message
             if mm.get_system_prompt_support(self._model_id):
                 system_message = self._prompt
+                initial_messages = None
             else:
                 system_message = None
-                await model_context.add_message(
-                    UserMessage(content=self._prompt, source="user")
-                )
+                initial_messages = [UserMessage(content=self._prompt, source="user")]
+
+            # Build the model_context (with optional initial messages)
+            model_context = self._make_model_context(
+                agent_data=agent_data,
+                model_client=model_client,
+                tools=tools,
+                initial_messages=initial_messages,
+            )
 
             # Load Extra multi-shot messages if they exist
             if "extra_context" not in agents[agent]:
@@ -606,7 +615,7 @@ class AgentSession:
             # Smart terminator to reflect on the conversation if not complete
             terminators.append(
                 SmartReflectorTermination(
-                    model_client=mm.open_model(mm.default_memory_model),
+                    model_client=mm.open_model(mm.default_mini_model),
                     oneshot=self.oneshot,
                     agent_name=agent,
                 )
@@ -619,6 +628,143 @@ class AgentSession:
                 participants=[self.agent],
                 termination_condition=termination,
             )
+
+    def _validate_prompt_context(self, model_id: str, agent_data: dict) -> None:
+        """Validate context when system prompts are unsupported.
+
+        Ensures an injected prompt can be preserved. Raises ValueError when
+        configuration is insufficient (e.g., buffered with buffer_size < 2, or
+        head_tail with head_size < 1).
+        """
+        mm = self.manager.mm
+        # If system prompts are supported, nothing to validate
+        if mm.get_system_prompt_support(model_id):
+            return
+
+        ctx_cfg = (agent_data or {}).get("context") or {}
+        if not isinstance(ctx_cfg, dict):
+            # Defaults to unbounded; acceptable
+            return
+        ctx_type = str(ctx_cfg.get("type", "unbounded")).strip().lower()
+
+        try:
+            if ctx_type in ("buffered", "buffer", "buffer_size"):
+                buffer_size = int(ctx_cfg.get("buffer_size", 20))
+                if buffer_size < 2:
+                    raise ValueError(
+                        f"Model '{model_id}' does not support system prompts and "
+                        f"buffered context size {buffer_size} is too small to "
+                        "retain the injected prompt. Set buffer_size >= 2 or "
+                        "use a model that supports system prompts."
+                    )
+            elif ctx_type in ("head_tail", "headandtail", "head_and_tail", "head-tail"):
+                head_size = int(ctx_cfg.get("head_size", 3))
+                if head_size < 1:
+                    raise ValueError(
+                        f"Model '{model_id}' does not support system prompts and "
+                        "head_tail context requires head_size >= 1 to retain the "
+                        "injected prompt."
+                    )
+            # token-limited and unbounded are acceptable; trimming is token-based
+            # and not deterministic here
+        except Exception as e:
+            # Surface as configuration error with proper chaining
+            name = agent_data.get("name", "unknown")
+            raise ValueError(
+                f"Invalid context configuration for agent '{name}': {e}"
+            ) from e
+
+    def _make_model_context(
+        self,
+        agent_data: dict,
+        model_client,
+        tools,
+        initial_messages: list | None = None,
+    ) -> Any:
+        """Create a ChatCompletionContext based on agent configuration.
+
+        Supported configuration on the agent:
+          context:
+            type: unbounded | buffered | token | head_tail
+            # buffered
+            buffer_size: int
+            # token
+            token_limit: int | null
+            # head_tail
+            head_size: int
+            tail_size: int
+
+        Falls back to UnboundedChatCompletionContext if unset or invalid.
+        """
+        ctx_cfg = (agent_data or {}).get("context") or {}
+        if not isinstance(ctx_cfg, dict):
+            logger.warning(
+                "agent context config must be a mapping; defaulting to unbounded"
+            )
+            return UnboundedChatCompletionContext(initial_messages=initial_messages)
+
+        ctx_type = str(ctx_cfg.get("type", "unbounded")).strip().lower()
+
+        try:
+            if ctx_type in ("unbounded", "default", "all"):
+                return UnboundedChatCompletionContext(initial_messages=initial_messages)
+
+            if ctx_type in ("buffered", "buffer", "buffer_size"):
+                buffer_size = int(ctx_cfg.get("buffer_size", 20))
+                if buffer_size <= 0:
+                    raise ValueError("buffer_size must be > 0")
+                return BufferedChatCompletionContext(
+                    buffer_size=buffer_size, initial_messages=initial_messages
+                )
+
+            if ctx_type in (
+                "token",
+                "token_limited",
+                "tokenlimited",
+                "token_limit",
+            ):
+                # token_limit is optional; if None, model's remaining_tokens will be
+                # used
+                token_limit_raw = ctx_cfg.get("token_limit", None)
+                token_limit = (
+                    None
+                    if token_limit_raw in (None, "", "null")
+                    else int(token_limit_raw)
+                )
+                # tool_schema is optional; for now we let it be None (tools are
+                # passed to agent separately)
+                return TokenLimitedChatCompletionContext(
+                    model_client=model_client,
+                    token_limit=token_limit,
+                    initial_messages=initial_messages,
+                )
+
+            if ctx_type in ("head_tail", "headandtail", "head_and_tail", "head-tail"):
+                head_size = int(ctx_cfg.get("head_size", 3))
+                tail_size = int(ctx_cfg.get("tail_size", 20))
+                if head_size < 0 or tail_size <= 0:
+                    raise ValueError("head_size must be >= 0 and tail_size must be > 0")
+                return HeadAndTailChatCompletionContext(
+                    head_size=head_size,
+                    tail_size=tail_size,
+                    initial_messages=initial_messages,
+                )
+
+        except Exception as e:
+            logger.warning(
+                "invalid context config for agent '%s': %s; defaulting to unbounded",
+                agent_data.get("name", "unknown"),
+                e,
+            )
+            return UnboundedChatCompletionContext(initial_messages=initial_messages)
+
+        # Fallback
+        logger.warning(
+            "unknown context type '%s' for agent '%s'; defaulting to unbounded",
+            ctx_type,
+            agent_data.get("name", "unknown"),
+        )
+        return UnboundedChatCompletionContext(initial_messages=initial_messages)
 
     # --- Agent-specific properties (session-scoped)
 
@@ -694,6 +840,9 @@ class AgentSession:
                 subagent_data["model"] = mm.default_chat_model
             model_client = mm.open_model(subagent_data["model"])
 
+            # Validate context capacity for subagents when system prompts unsupported
+            self._validate_prompt_context(subagent_data["model"], subagent_data)
+
             if subagent_data.get("type") == "autogen-agent":
                 if subagent_data.get("name") == "websurfer":
                     agents.append(
@@ -721,12 +870,32 @@ class AgentSession:
                         else:
                             logger.warning(f"Tool {tool} not found; skipping.")
 
+                # system message if supported; else include prompt as initial
+                # user message in the context
+                if mm.get_system_prompt_support(subagent_data["model"]):
+                    system_message = subagent_data["prompt"]
+                    sub_initial_messages = None
+                else:
+                    system_message = None
+                    sub_initial_messages = [
+                        UserMessage(content=subagent_data["prompt"], source="user")
+                    ]
+
+                # Build model context with any initial messages
+                sub_model_context = self._make_model_context(
+                    agent_data=subagent_data,
+                    model_client=model_client,
+                    tools=tools,
+                    initial_messages=sub_initial_messages,
+                )
+
                 agents.append(
                     AssistantAgent(
                         name=agent,
                         model_client=model_client,
                         tools=tools,
-                        system_message=subagent_data["prompt"],
+                        model_context=sub_model_context,
+                        system_message=system_message,
                         description=subagent_data["description"],
                         reflect_on_tool_use=True,
                     )
@@ -998,7 +1167,7 @@ class LLMTools:
     llmtools_mm = ModelManager()
     llmtools_summary_model: (
         AzureOpenAIChatCompletionClient | OpenAIChatCompletionClient
-    ) = llmtools_mm.open_model(llmtools_mm.default_memory_model)
+    ) = llmtools_mm.open_model(llmtools_mm.default_mini_model)
 
     def __init__(self):
         """Builds the intent prompt template"""

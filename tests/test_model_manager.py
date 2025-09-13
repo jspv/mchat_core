@@ -64,10 +64,8 @@ _temperature_support = true
 chat_model = "gpt-4_1"
 image_model = "dall-e-3"
 embedding_model = "text-embedding-ada-002"
-memory_model = "gpt-4_1"
 chat_temperature = 0.7
-memory_model_temperature = 0.1
-memory_model_max_tokens = 2048
+mini_model = "gpt-4_1"
     """
     settings_toml.write_text(settings_content)
     test_settings = Dynaconf(settings_files=[str(settings_toml)])

@@ -24,9 +24,7 @@ def dynaconf_test_settings(tmp_path, monkeypatch):
     [defaults]
     chat_model = "gpt-4_1"
     chat_temperature = 0.7
-    memory_model = "gpt-4_1"
-    memory_model_temperature = 0.1
-    memory_model_max_tokens = 2048
+    mini_model = "gpt-4_1"
     google_api_key = "dummy_google_key"
     """
 

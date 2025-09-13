@@ -157,6 +157,34 @@ mchat_core provides:
 You can add more agents and teams at the top level in `agents.yaml` (same directory as this README), following the structure in `mchat/default_personas.yaml`.  
 When configuring personas, the `extra_context` list lets you define multi-shot prompts—see the `linux computer` persona in `mchat/default_personas.json` for an example.
 
+#### Context options (conversation memory window)
+
+You can control how much prior conversation the agent sees using the `context` block on each agent. Supported types:
+
+- Unbounded (default): keeps all messages
+  context:
+    type: unbounded
+
+- Buffered: keep only the last N messages
+  context:
+    type: buffered
+    buffer_size: 20
+
+- Token-limited: keep messages up to a token limit (or use the model's remaining tokens if not set)
+  context:
+    type: token
+    token_limit: 4000  # optional
+
+- Head and Tail: keep the first head_size and last tail_size messages
+  context:
+    type: head_tail
+    head_size: 3
+    tail_size: 20
+
+If `type` is unknown or the configuration is invalid, it falls back to unbounded.
+
+**Warning**: if the LLM model does not support sytem messages, the prompt will be injected as the first message and will be treated just like any other user message, which means 'buffered' and 'token' can cause the prompt to be removed.  A good option here is to use 'head_tail' which will keep the prompt in the head.  
+
 ### Session Management
 
 **Important**: Always use `manager.new_conversation()` to create sessions. Direct instantiation of `AgentSession` is not supported and will raise a `RuntimeError` with guidance on proper usage.
