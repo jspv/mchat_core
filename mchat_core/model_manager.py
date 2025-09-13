@@ -37,6 +37,9 @@ class ModelConfigChatOpenAI(ModelConfig):
     api_type: Literal["open_ai"]
     base_url: HttpUrl | None = None
     temperature: float | None = None
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    reasoning: dict | None = None
+    max_output_tokens: int | None = None
     model_info: dict | None = None
     _streaming_support: bool | None = True
     _tool_support: bool | None = True
@@ -61,6 +64,9 @@ class ModelConfigChatAzure(ModelConfig):
     model_type: Literal["chat"]
     api_type: Literal["azure"]
     temperature: float | None = None
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    reasoning: dict | None = None
+    max_output_tokens: int | None = None
     _streaming_support: bool | None = True
     _tool_support: bool | None = True
     _json_support: bool | None = True
@@ -310,10 +316,39 @@ class ModelManager:
             model_kwargs.pop("api_key")
 
         if record.model_type == "chat":
-            if not getattr(record, "_temperature_support", True):
-                model_kwargs.pop("temperature")
-            elif getattr(record, "temperature", None) is None:
-                model_kwargs.setdefault("temperature", self.default_chat_temperature)
+            temp_support = getattr(record, "_temperature_support", True)
+            if temp_support is False:
+                # Model does not support temperature; ensure it's not passed
+                model_kwargs.pop("temperature", None)
+            elif temp_support is True:
+                # Model supports temperature; default if unset or None
+                if model_kwargs.get("temperature") is None:
+                    model_kwargs["temperature"] = self.default_chat_temperature
+
+            # Reasoning controls: prefer reasoning_effort; map legacy reasoning
+            legacy_reasoning = model_kwargs.get("reasoning")
+            if model_kwargs.get("reasoning_effort") is None and isinstance(
+                legacy_reasoning, dict
+            ):
+                effort = legacy_reasoning.get("effort")
+                if effort in ("low", "medium", "high"):
+                    model_kwargs["reasoning_effort"] = effort
+            # remove legacy field
+            model_kwargs.pop("reasoning", None)
+
+            # Enable reasoning when declared supported OR effort provided
+            has_effort = model_kwargs.get("reasoning_effort") is not None
+            reasoning_support = (
+                getattr(record, "_reasoning_support", False) or has_effort
+            )
+            if reasoning_support:
+                if model_kwargs.get("reasoning_effort") is None:
+                    model_kwargs.pop("reasoning_effort", None)
+                if model_kwargs.get("max_output_tokens") is None:
+                    model_kwargs.pop("max_output_tokens", None)
+            else:
+                model_kwargs.pop("reasoning_effort", None)
+                model_kwargs.pop("max_output_tokens", None)
 
             if record.api_type == "open_ai":
                 return OpenAIChatCompletionClient(**model_kwargs)

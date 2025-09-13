@@ -67,9 +67,11 @@ async def patched_system_prompt_support(mm: ModelManager, supported: bool):
 
 
 async def show_agent_context(manager: AutogenManager, name: str):
-    session = await manager.new_conversation(agent=name, stream_tokens=False)
-    ctx = session.agent._model_context
     mm = manager.mm
+    session = await manager.new_conversation(
+        agent=name, model_id=mm.default_mini_model, stream_tokens=False
+    )
+    ctx = session.agent._model_context
 
     # BEFORE ask: inspect context and effective system prompt
     msgs_before = await ctx.get_messages()
