@@ -6,9 +6,12 @@ authors = [{ name = "jspv", email = "jspvgithub@twinleaf.xyz" }]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "autogen-core @ git+https://github.com/microsoft/autogen.git@main#subdirectory=python/packages/autogen-core",
-    "autogen-agentchat @ git+https://github.com/microsoft/autogen.git@main#subdirectory=python/packages/autogen-agentchat",
-    "autogen-ext[azure,openai] @ git+https://github.com/microsoft/autogen.git@main#subdirectory=python/packages/autogen-ext",
+    # "autogen-core @ git+https://github.com/microsoft/autogen.git@main#subdirectory=python/packages/autogen-core",
+    # "autogen-agentchat @ git+https://github.com/microsoft/autogen.git@main#subdirectory=python/packages/autogen-agentchat",
+    # "autogen-ext[azure,openai] @ git+https://github.com/microsoft/autogen.git@main#subdirectory=python/packages/autogen-ext",
+    "autogen-core>=0.7.4",
+    "autogen-agentchat>=0.7.4",
+    "autogen-ext[azure,openai]>=0.7.4",
     "dynaconf>=3.2.11",
     "playwright>=1.52.0",
     "pyyaml>=6.0.2",
