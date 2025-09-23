@@ -490,6 +490,7 @@ class AgentSession:
 
         self._prompt = agent_data.get("prompt", "")
         self._description = agent_data.get("description", "")
+        self._extra_kwargs = agent_data.get("extra_kwargs", {})
 
         if agent_data.get("type") == "team":
             # Team-based Agents
@@ -568,6 +569,28 @@ class AgentSession:
                 else:
                     raise ValueError(f"Unknown autogen agent type for agent:{agent}")
             else:
+                # Merge in any extra args, avoiding conflicts with explicit params
+                extra_kwargs = {}
+                if isinstance(self._extra_kwargs, dict) and self._extra_kwargs:
+                    reserved = {
+                        "name",
+                        "model_client",
+                        "tools",
+                        "model_context",
+                        "system_message",
+                        "model_client_stream",
+                        "reflect_on_tool_use",
+                    }
+                    extra_kwargs = {
+                        k: v for k, v in self._extra_kwargs.items() if k not in reserved
+                    }
+                    dropped = set(self._extra_kwargs.keys()) - set(extra_kwargs.keys())
+                    if dropped:
+                        logger.debug(
+                            "Skipping conflicting extra_kwargs for AssistantAgent: %s",
+                            sorted(dropped),
+                        )
+
                 self.agent = AssistantAgent(
                     name=agent,
                     model_client=model_client,
@@ -576,6 +599,7 @@ class AgentSession:
                     system_message=system_message,
                     model_client_stream=True,
                     reflect_on_tool_use=True,
+                    **extra_kwargs,
                 )
 
                 messages = await self.agent._model_context.get_messages()
@@ -889,6 +913,31 @@ class AgentSession:
                     initial_messages=sub_initial_messages,
                 )
 
+                extra_kwargs = {}
+                if isinstance(subagent_data.get("extra_kwargs", None), dict):
+                    reserved = {
+                        "name",
+                        "model_client",
+                        "tools",
+                        "model_context",
+                        "system_message",
+                        "model_client_stream",
+                        "reflect_on_tool_use",
+                    }
+                    extra_kwargs = {
+                        k: v
+                        for k, v in subagent_data["extra_kwargs"].items()
+                        if k not in reserved
+                    }
+                    dropped = set(subagent_data["extra_kwargs"].keys()) - set(
+                        extra_kwargs.keys()
+                    )
+                    if dropped:
+                        logger.debug(
+                            "Skipping conflicting extra_kwargs for AssistantAgent: %s",
+                            sorted(dropped),
+                        )
+
                 agents.append(
                     AssistantAgent(
                         name=agent,
@@ -898,6 +947,7 @@ class AgentSession:
                         system_message=system_message,
                         description=subagent_data["description"],
                         reflect_on_tool_use=True,
+                        **extra_kwargs,
                     )
                 )
 
