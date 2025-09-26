@@ -8,14 +8,15 @@ logger = get_logger(__name__)
 # Define a token provider class or function
 class AzureADTokenProvider:
     """
-    AzureADTokenProvider provides access tokens for Azure AD-protected resources using client credentials.
+    AzureADTokenProvider provides access tokens for Azure AD-protected resources using
+    client credentials.
 
     Example:
         token_provider = AzureADTokenProvider(
             tenant_id="...",
             client_id="...",
             client_secret="...",
-            resource_scope=".../.default"  # optional, defaults to "{client_id}/.default"
+            resource_scope=".../.default" # optional, defaults to "{client_id}/.default"
         )
         access_token = token_provider()  # or token_provider.token()
     """

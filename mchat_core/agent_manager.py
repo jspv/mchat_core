@@ -113,20 +113,71 @@ class IsCompleteTermination(TerminationCondition):
         self._is_terminated = False
 
 
-class AutogenManager:
-    # createa a model_manager for use with llmtools and AutogenManager
+class AgentManager:
+    # createa a model_manager for use with llmtools and AgentManager
     ag_mm = ModelManager()
     ag_memory_model = ag_mm.open_model(ag_mm.default_mini_model)
 
     def __init__(
         self,
-        message_callback: Callable | None = None,
+        agent_callback: Callable | None = None,
         agents: dict | None = None,
         agent_paths: list[str] | None = None,
         stream_tokens: bool = None,
+        message_callback: Callable | None = None,
         tools_directory: str | None = None,
         load_default_tools: bool = False,
     ):
+        """
+        Initialize the AgentManager.
+
+        Exactly one of `agents` or `agent_paths` must be provided.
+
+        Args:
+            agent_callback:
+                Async callable invoked with each agent message/event.
+                Signature: async def cb(message: str, **kwargs) -> None
+            agents:
+                In-memory mapping of agent definitions. Keys are agent names; values are
+                dicts describing agents or teams. For agents, common fields include:
+                type: "agent", description: str, prompt: str, model: str,
+                temperature: float, tools: list[str], extra_kwargs: dict.
+                For teams: type: "team", team_type: "round_robin" | "selector"
+            agent_paths:
+                List of file-system paths (files or directories) or raw YAML/JSON strings
+                containing agent definitions. Directories will be scanned for "
+                ".yaml/.json files.
+            stream_tokens:
+                Enable token/message streaming for compatible models.
+                If True, `message_callback`
+                must be provided. If None (default) and `message_callback` is provided,
+                streaming defaults to True.
+            message_callback:
+                Async callable that receives streamed output/messages.
+                Expected usage:
+                  await message_callback(
+                      message: str,
+                      agent: str | None = None,
+                      complete: bool | None = None,
+                      flush: bool | None = None,
+                  )
+                - message: the text chunk or final message
+                - agent: source agent name (when available)
+                - complete: True when a message is complete;
+                  False for incremental chunks
+                - flush: hint for UIs to flush output
+            tools_directory:
+                Directory containing custom tool specs to load. If None, only default
+                tools may be loaded (see `load_default_tools`).
+            load_default_tools:
+                When True, load built-in default tools.
+                If `tools_directory` is also provided,
+                defaults and custom tools are merged.
+
+        Raises:
+            ValueError: If both or neither of `agents` and `agent_paths` are provided,
+                        or if `stream_tokens` is True without a `message_callback`.
+        """
         # Ensure that exactly one of agents or agent_paths is provided
         if (agents is None) == (
             agent_paths is None
@@ -135,7 +186,7 @@ class AutogenManager:
                 "You must specify exactly one of 'agents' or 'agent_paths'"
             )
 
-        # if no callback is provided, disable streaming, hey don't have anywhere to go
+        # if no callback is provided, disable streaming; nowhere to send tokens
         if message_callback is None and stream_tokens is True:
             raise ValueError("stream_tokens cannot be True if message_callback is None")
         # default to streaming if a callback is provided and no preference is given
@@ -143,15 +194,17 @@ class AutogenManager:
             stream_tokens = True
 
         # create noop callback if none is provided, keeps rest of the code cleaner
-        if message_callback is None:
+        async def noop_callback(*args, **kwargs):
+            pass
 
-            async def noop_callback(*args, **kwargs):
-                pass
-
-            message_callback = noop_callback
+        agent_callback = noop_callback if agent_callback is None else agent_callback
+        message_callback = (
+            noop_callback if message_callback is None else message_callback
+        )
 
         self.mm = ModelManager()
         # Default callback and streaming setting for sessions
+        self._default_agent_callback = agent_callback
         self._default_message_callback = message_callback
         self._default_stream_tokens = stream_tokens
 
@@ -202,6 +255,7 @@ class AutogenManager:
         temperature: float | None = None,
         stream_tokens: bool | None = None,
         message_callback: Callable | None = None,
+        agent_callback: Callable | None = None,
     ) -> "AgentSession":
         """Create and return a new per-agent conversation session.
 
@@ -210,16 +264,22 @@ class AutogenManager:
 
         Args:
             stream_tokens: Override manager default if provided
-            message_callback: Override manager default if provided
+            message_callback: Override manager default if provided (streaming callback)
+            agent_callback: Override manager default if provided
         """
         # Use session-specific values or fall back to manager defaults
         effective_stream_tokens = (
             stream_tokens if stream_tokens is not None else self._default_stream_tokens
         )
-        effective_callback = (
+        effective_message_callback = (
             message_callback
             if message_callback is not None
             else self._default_message_callback
+        )
+        effective_agent_callback = (
+            agent_callback
+            if agent_callback is not None
+            else self._default_agent_callback
         )
 
         session = await AgentSession.create(
@@ -228,7 +288,8 @@ class AutogenManager:
             model_id=model_id,
             temperature=temperature,
             stream_tokens=effective_stream_tokens,
-            message_callback=effective_callback,
+            message_callback=effective_message_callback,
+            agent_callback=effective_agent_callback,
         )
         return session
 
@@ -339,8 +400,8 @@ class AutogenManager:
         return agents
 
 
-class AgentManager(AutogenManager):
-    """Alias for AutogenManager"""
+class AutogenManager(AgentManager):
+    """Alias for AgentManager"""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -375,6 +436,7 @@ class AgentSession:
         temperature: float | None = None,
         stream_tokens: bool = True,
         message_callback: Callable | None = None,
+        agent_callback: Callable | None = None,
         _internal: bool = False,
     ) -> None:
         """Initialize AgentSession - Internal use only.
@@ -403,17 +465,16 @@ class AgentSession:
         self._stream_tokens = stream_tokens
         self._streaming_preference = stream_tokens
         # per-session callback; use provided callback or fall back to manager default
-        if message_callback is not None:
-            self._message_callback = message_callback
-        else:
-            self._message_callback = getattr(manager, "_default_message_callback", None)
-            # If still None, create a noop callback
-            if self._message_callback is None:
-
-                async def noop_callback(*args, **kwargs):
-                    pass
-
-                self._message_callback = noop_callback
+        self._agent_callback = (
+            agent_callback
+            if agent_callback is not None
+            else manager._default_agent_callback
+        )
+        self._message_callback = (
+            message_callback
+            if message_callback is not None
+            else manager._default_message_callback
+        )
 
         # Will be used to cancel ongoing tasks for this session
         self._cancelation_token: CancellationToken | None = None
@@ -429,14 +490,15 @@ class AgentSession:
     @classmethod
     async def create(
         cls,
-        manager: AutogenManager,
+        manager: AgentManager,
         agent_name: str | None = None,
         model_id: str | None = None,
         temperature: float | None = None,
         stream_tokens: bool = True,
         message_callback: Callable | None = None,
+        agent_callback: Callable | None = None,
     ) -> "AgentSession":
-        """Async factory method to create and  initialize an AgentSession.
+        """Async factory method to create and initialize an AgentSession.
 
         Args:
             manager: The AutogenManager instance
@@ -444,7 +506,8 @@ class AgentSession:
             model_id: Override model for this session
             temperature: Override temperature for this session
             stream_tokens: Override streaming setting for this session
-            message_callback: Override callback for this session
+            message_callback: Override manager default if provided
+            agent_callback: Override callback for this session
 
         Returns:
             An initialized AgentSession
@@ -462,6 +525,7 @@ class AgentSession:
             temperature=temperature,
             stream_tokens=stream_tokens,
             message_callback=message_callback,
+            agent_callback=agent_callback,
             _internal=True,  # Allow internal instantiation
         )
         await session._initialize()
@@ -1077,6 +1141,10 @@ class AgentSession:
             async for response in agent_runner(
                 task=task, cancellation_token=cancellation_token
             ):
+                # call agent_callback to notifiy application if needed, this is
+                # intended to allow the calling app to see the raw responses for
+                # debugging or monitoring
+                await self._agent_callback(response)
                 # Dispatch to correct handler
                 if response is None:
                     logger.debug("Ignoring None response")

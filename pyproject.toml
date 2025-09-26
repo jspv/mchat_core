@@ -1,14 +1,5 @@
 [project]
-name = "mchat-core"
-version = "0.2.2"
-description = "Framework for building multi-agent chat applications with autogen"
-authors = [{ name = "jspv", email = "jspvgithub@twinleaf.xyz" }]
-readme = "README.md"
-requires-python = ">=3.11"
 dependencies = [
-    # "autogen-core @ git+https://github.com/microsoft/autogen.git@main#subdirectory=python/packages/autogen-core",
-    # "autogen-agentchat @ git+https://github.com/microsoft/autogen.git@main#subdirectory=python/packages/autogen-agentchat",
-    # "autogen-ext[azure,openai] @ git+https://github.com/microsoft/autogen.git@main#subdirectory=python/packages/autogen-ext",
     "autogen-core>=0.7.4",
     "autogen-agentchat>=0.7.4",
     "autogen-ext[azure,openai]>=0.7.4",
@@ -19,6 +10,12 @@ dependencies = [
     # needed for gpt-5, remove once autogen gets updated
     "tiktoken>=0.11.0",
 ]
+name = "mchat-core"
+version = "0.2.3"
+description = "Framework for building multi-agent chat applications with autogen"
+authors = [{ name = "jspv", email = "jspvgithub@twinleaf.xyz" }]
+readme = "README.md"
+requires-python = ">=3.11"
 keywords = ["llm", "agents", "autogen", "chat", "tools"]
 
 classifiers = [
