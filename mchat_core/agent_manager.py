@@ -399,6 +399,137 @@ class AgentManager:
                     )
         return agents
 
+    # Tool management methods
+    def add_tool(self, tool_name: str, tool_function) -> None:
+        """Add a tool to the global tool registry.
+
+        Args:
+            tool_name: Unique identifier for the tool
+            tool_function: The tool function/callable to register
+        """
+        if tool_name in self.tools:
+            logger.warning(f"Tool '{tool_name}' already exists, overwriting")
+        self.tools[tool_name] = tool_function
+        logger.debug(f"Added tool '{tool_name}' to global registry")
+
+    def remove_tool(self, tool_name: str) -> bool:
+        """Remove a tool from the global tool registry.
+
+        Args:
+            tool_name: Name of the tool to remove
+
+        Returns:
+            True if tool was removed, False if it didn't exist
+        """
+        if tool_name in self.tools:
+            del self.tools[tool_name]
+            logger.debug(f"Removed tool '{tool_name}' from global registry")
+            return True
+        return False
+
+    def list_tools(self) -> list[str]:
+        """Get list of all available tools.
+
+        Returns:
+            List of tool names in the global registry
+        """
+        return list(self.tools.keys())
+
+    def add_agent_tool(self, agent_name: str, tool_name: str) -> None:
+        """Add a tool to a specific agent's tool list.
+
+        Args:
+            agent_name: Name of the agent
+            tool_name: Name of the tool to add (must exist in global registry)
+
+        Raises:
+            ValueError: If agent doesn't exist or tool not in global registry
+        """
+        if agent_name not in self._agents:
+            raise ValueError(f"Agent '{agent_name}' does not exist")
+
+        if tool_name not in self.tools:
+            raise ValueError(f"Tool '{tool_name}' not found in global registry")
+
+        # Ensure the agent has a tools list
+        if "tools" not in self._agents[agent_name]:
+            self._agents[agent_name]["tools"] = []
+
+        # Add tool if not already present
+        if tool_name not in self._agents[agent_name]["tools"]:
+            self._agents[agent_name]["tools"].append(tool_name)
+            logger.debug(f"Added tool '{tool_name}' to agent '{agent_name}'")
+        else:
+            logger.warning(
+                f"Tool '{tool_name}' already assigned to agent '{agent_name}'"
+            )
+
+    def remove_agent_tool(self, agent_name: str, tool_name: str) -> bool:
+        """Remove a tool from a specific agent's tool list.
+
+        Args:
+            agent_name: Name of the agent
+            tool_name: Name of the tool to remove
+
+        Returns:
+            True if tool was removed, False if agent doesn't exist or tool wasn't assigned
+        """
+        if agent_name not in self._agents:
+            return False
+
+        agent_tools = self._agents[agent_name].get("tools", [])
+        if tool_name in agent_tools:
+            agent_tools.remove(tool_name)
+            logger.debug(f"Removed tool '{tool_name}' from agent '{agent_name}'")
+            return True
+
+        return False
+
+    def list_agent_tools(self, agent_name: str) -> list[str]:
+        """Get list of tools assigned to a specific agent.
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            List of tool names assigned to the agent
+
+        Raises:
+            ValueError: If agent doesn't exist
+        """
+        if agent_name not in self._agents:
+            raise ValueError(f"Agent '{agent_name}' does not exist")
+
+        return self._agents[agent_name].get("tools", [])
+
+    def get_tool_info(self, tool_name: str) -> dict:
+        """Get information about a specific tool.
+
+        Args:
+            tool_name: Name of the tool
+
+        Returns:
+            Dictionary with tool information including which agents use it
+
+        Raises:
+            ValueError: If tool doesn't exist
+        """
+        if tool_name not in self.tools:
+            raise ValueError(f"Tool '{tool_name}' not found")
+
+        # Find which agents use this tool
+        agents_using_tool = []
+        for agent_name, agent_data in self._agents.items():
+            agent_tools = agent_data.get("tools", [])
+            if tool_name in agent_tools:
+                agents_using_tool.append(agent_name)
+
+        return {
+            "name": tool_name,
+            "function": self.tools[tool_name],
+            "used_by_agents": agents_using_tool,
+        }
+
 
 class AutogenManager(AgentManager):
     """Alias for AgentManager"""
