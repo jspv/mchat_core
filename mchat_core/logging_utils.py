@@ -66,7 +66,8 @@ class TraceLogger(logging.getLoggerClass()):
 
 def get_logger(name=None):
     """
-    Return a TraceLogger instance (enables .trace()). Use instead of logging.getLogger().
+    Return a TraceLogger instance (enables .trace()).
+    Use instead of logging.getLogger().
     Only loggers obtained through this function get the trace() method.
     """
     logger = logging.getLogger(name)

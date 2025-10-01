@@ -14,8 +14,7 @@ The `[tools]` dependency group includes additional requirements for bundled LLM 
 
 - With uv (recommended):
   - uv sync --group tools
-- With pip (install only what you need - see pyproject.toml)
-  - pip install tzlocal fredapi chromadb beautifulsoup4
+- With other package managers: see `pyproject.toml` for the `tools` dependency group
 
 ### Running Tests
 
@@ -28,7 +27,14 @@ The `[tools]` dependency group includes additional requirements for bundled LLM 
 - Exclude tools tests:
   - pytest -m "not tools"
 
-Note: Tool tests are marked with the “tools” marker and will auto-skip if optional packages are not installed.
+Live LLM tests (opt-in; real API calls):
+- By default, tests marked `live_llm` are excluded via pytest.ini (`addopts = -m "not live_llm"`).
+- To run them, set an API key and select the marker:
+  - OPENAI_API_KEY=your_key pytest -m live_llm -rs
+
+Note:
+- Tool tests are marked with the "tools" marker and auto-skip if optional packages are not installed.
+- Live LLM tests are marked with the `live_llm` marker and require an OpenAI API key.
 
 ---
 
@@ -129,10 +135,10 @@ mchat_core provides a session-based agent management system where each conversat
 ### Basic Usage
 
 ```python
-from mchat_core.agent_manager import AutogenManager
+from mchat_core.agent_manager import AgentManager
 
-# Initialize with agent definitions
-manager = AutogenManager(agent_paths=["agents.yaml"])
+# Initialize with agent definitions (path or inline YAML)
+manager = AgentManager(agent_paths=["agents.yaml"])  
 
 # Create a new conversation session (returns AgentSession)
 session = await manager.new_conversation("my_agent")
@@ -142,7 +148,7 @@ result = await session.ask("Hello, how can you help me?")
 
 # Each session maintains its own state
 await session.clear_memory()  # Clear this session's memory
-session.cancel()        # Cancel ongoing operations for this session
+session.cancel()              # Cancel ongoing operations for this session
 ```
 
 ### Agent Configuration
@@ -182,6 +188,69 @@ You can control how much prior conversation the agent sees using the `context` b
 If `type` is unknown or the configuration is invalid, it falls back to unbounded.
 
 **Warning**: if the LLM model does not support sytem messages, the prompt will be injected as the first message and will be treated just like any other user message, which means 'buffered' and 'token' can cause the prompt to be removed.  A good option here is to use 'head_tail' which will keep the prompt in the head.  
+
+#### Tool configuration (built-in + MCP)
+
+Agents can be equipped with tools to extend capabilities. You can mix built-in tools with Model Context Protocol (MCP) tools.
+
+Built-in tools example:
+
+```yaml
+my_agent:
+  type: agent
+  description: An agent with web search capabilities
+  prompt: You can help users by searching the web for information.
+  tools:
+    - web_search          # built-in
+    - generate_image      # built-in
+```
+
+MCP via STDIO (command-line server):
+
+```yaml
+searcher:
+  type: agent
+  description: AI assistant with Google search via MCP
+  prompt: You can search Google for current information and cite sources.
+  tools:
+    - mcp: uvx --from . google-search-mcp
+      cwd: /path/to/google_search_mcp
+      # Optional extras
+      env:
+        API_KEY: "${API_KEY}"
+      timeout: 30
+```
+
+MCP via HTTP (web server):
+
+```yaml
+web_searcher:
+  type: agent
+  description: AI assistant using a web-based MCP server
+  prompt: Use the MCP search tool to find and cite current information.
+  tools:
+    - mcp:http://localhost:8000/mcp
+      timeout: 30
+```
+
+Notes:
+- MCP tools are registered as placeholders at startup and resolved to real tools when a conversation begins.
+- STDIO servers support `cwd`, `env`, `timeout`, and extra `args`.
+- HTTP servers support `url` and `timeout`.
+- See `pyproject.toml` for optional tool dependencies (group: `tools`).
+
+Mixed tools:
+
+```yaml
+hybrid_agent:
+  type: agent
+  description: Agent with both built-in and MCP tools
+  tools:
+    - web_search
+    - generate_image
+    - mcp: uvx --from . custom-mcp-server
+      cwd: /path/to/server
+```
 
 ### Session Management
 

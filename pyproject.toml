@@ -2,16 +2,17 @@
 dependencies = [
     "autogen-core>=0.7.4",
     "autogen-agentchat>=0.7.4",
-    "autogen-ext[azure,openai,mcp]>=0.7.4",
+    "autogen-ext[azure,mcp,openai]>=0.7.4",
     "dynaconf>=3.2.11",
     "playwright>=1.52.0",
     "pyyaml>=6.0.2",
     "rich>=14.0.0",
     # needed for gpt-5, remove once autogen gets updated
     "tiktoken>=0.11.0",
+    "aiohttp>=3.12.15",
 ]
 name = "mchat-core"
-version = "0.2.3"
+version = "0.3.0"
 description = "Framework for building multi-agent chat applications with autogen"
 authors = [{ name = "jspv", email = "jspvgithub@twinleaf.xyz" }]
 readme = "README.md"

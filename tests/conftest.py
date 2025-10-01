@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import os
 from unittest.mock import MagicMock
