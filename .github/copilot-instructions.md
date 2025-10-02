@@ -28,6 +28,7 @@ Rules for AI coding agents in this repo. Keep edits small, follow existing patte
 - Deps: managed with `uv`. Optional tool deps group: `tools` in `pyproject.toml` (install: `uv sync --group tools`).
 - Tests (pytest): default excludes live LLM (`-m "not live_llm"`). Run: `pytest`; skip reasons: `pytest -rs`; only tools: `pytest -m tools -rs`; live LLM: set `OPENAI_API_KEY` and run `pytest -m live_llm -rs`.
 - Lint/type-check: Ruff + mypy configured in `pyproject.toml`.
+- When you create a new shell, remember to actvate the venv with `source .venv/bin/activate` otherwise commands like `python` and `pytest` won't be found.
 
 ## Minimal examples
 - Agent YAML (mixing tools + MCP):

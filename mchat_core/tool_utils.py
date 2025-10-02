@@ -500,15 +500,13 @@ def create_mcp_validation_task(agents_config: dict) -> asyncio.Task | None:
     The resulting task resolves to (MCPToolManager, validation_results).
     """
     try:
-        try:
-            loop = asyncio.get_running_loop()
-            return loop.create_task(run_mcp_validation(agents_config))
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                return loop.create_task(run_mcp_validation(agents_config))
-            # No running loop; caller can defer validation
-            return None
+        # Only schedule if there's an active running loop in this thread.
+        # Avoid deprecated get_event_loop() behavior when no loop is set.
+        loop = asyncio.get_running_loop()
+        return loop.create_task(run_mcp_validation(agents_config))
+    except RuntimeError:
+        # No running loop available; let caller defer validation explicitly.
+        return None
     except Exception as e:
         logger.debug(f"MCP validation task creation failed: {e}")
         return None
