@@ -1,8 +1,8 @@
 [project]
 dependencies = [
-    "autogen-core>=0.7.4",
-    "autogen-agentchat>=0.7.4",
-    "autogen-ext[azure,mcp,openai]>=0.7.4",
+    "autogen-core>=0.7.5",
+    "autogen-agentchat>=0.7.5",
+    "autogen-ext[azure,mcp,openai]>=0.7.5",
     "dynaconf>=3.2.11",
     "playwright>=1.52.0",
     "pyyaml>=6.0.2",
@@ -12,7 +12,7 @@ dependencies = [
     "aiohttp>=3.12.15",
 ]
 name = "mchat-core"
-version = "0.3.0"
+version = "0.3.1"
 description = "Framework for building multi-agent chat applications with autogen"
 authors = [{ name = "jspv", email = "jspvgithub@twinleaf.xyz" }]
 readme = "README.md"

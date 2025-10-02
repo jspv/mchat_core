@@ -54,6 +54,18 @@ logging.addLevelName(TRACE_LEVEL_NUM, "TRACE")
 
 TRACE = TRACE_LEVEL_NUM
 
+# Re-export common logging level values so callers don't need to import `logging`.
+# These mirror the constants in the standard library's `logging` module.
+DEBUG = logging.DEBUG
+INFO = logging.INFO
+WARNING = logging.WARNING
+ERROR = logging.ERROR
+CRITICAL = logging.CRITICAL
+NOTSET = logging.NOTSET
+# Common aliases provided by the logging module (kept here for convenience)
+WARN = logging.WARN  # alias of WARNING
+FATAL = logging.FATAL  # alias of CRITICAL
+
 
 class TraceLogger(logging.getLoggerClass()):
     """Logger subclass with .trace() method."""
