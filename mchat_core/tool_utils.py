@@ -81,6 +81,85 @@ class MCPToolSpec:
         return f"MCPToolSpec(type={self.type}, spec='{self.spec_string}')"
 
 
+def register_mcp_placeholders(
+    agents_config: dict, tools_registry: dict
+) -> dict[str, str]:
+    """Register placeholder tools for all MCP specs found in agents.
+
+    This allows MCP tools to appear immediately in list_tools(), while actual
+    MCP connections are deferred until conversation time.
+
+    Args:
+        agents_config: mapping of agent name -> agent configuration
+        tools_registry: the global tools registry (name -> callable) to update
+
+    Returns:
+        Mapping of MCP spec string -> placeholder tool name
+    """
+    placeholder_map: dict[str, str] = {}
+    try:
+        for agent_name, agent_config in (agents_config or {}).items():
+            tools = (
+                agent_config.get("tools", []) if isinstance(agent_config, dict) else []
+            )
+            try:
+                mcp_specs = parse_mcp_tools(tools, agent_config)
+                for spec in mcp_specs:
+                    placeholder = MCPToolPlaceholder(spec)
+                    tool_name = placeholder.name
+                    tools_registry[tool_name] = placeholder
+                    placeholder_map[spec.spec_string] = tool_name
+                    logger.debug(
+                        "Registered MCP placeholder '%s' for spec '%s' (agent=%s)",
+                        tool_name,
+                        spec.spec_string,
+                        agent_name,
+                    )
+            except Exception as e:
+                logger.error("Error parsing MCP tools for agent %s: %s", agent_name, e)
+    except Exception as e:
+        logger.error("Error during MCP placeholder registration: %s", e)
+
+    return placeholder_map
+
+
+def replace_mcp_placeholders_with_real_tools(
+    mcp_tools: dict, tools_registry: dict, placeholder_map: dict[str, str]
+) -> None:
+    """Replace any registered MCP placeholders with real loaded tools.
+
+    Current behavior: replaces the first available placeholder with each real
+    tool found (maintains backward compatibility with previous logic that did
+    not track a 1:1 spec->tool mapping from server results).
+
+    Args:
+        mcp_tools: dict of tool name -> real tool callable/adapter
+        tools_registry: global tool registry to mutate
+        placeholder_map: mapping of spec string -> placeholder tool name
+    """
+    try:
+        # Import here to avoid circulars at module import time
+        from .tool_utils import MCPToolPlaceholder as _Placeholder
+    except Exception:
+        _Placeholder = MCPToolPlaceholder
+
+    for _tool_name, tool_func in (mcp_tools or {}).items():
+        # Find an un-replaced placeholder
+        placeholders_to_replace: list[tuple[str, str]] = []
+        for spec_string, placeholder_name in placeholder_map.items():
+            if placeholder_name in tools_registry:
+                obj = tools_registry[placeholder_name]
+                if isinstance(obj, _Placeholder):
+                    placeholders_to_replace.append((spec_string, placeholder_name))
+
+        if placeholders_to_replace:
+            _spec, placeholder_name = placeholders_to_replace[0]
+            tools_registry[placeholder_name] = tool_func
+            logger.debug(
+                "Replaced MCP placeholder '%s' with real tool.", placeholder_name
+            )
+
+
 def parse_mcp_tools(
     tool_specs: list[str | dict], agent_config: dict | None = None
 ) -> list[MCPToolSpec]:
@@ -394,6 +473,45 @@ async def load_agent_mcp_tools(agent_config: dict, mcp_manager) -> dict[str, any
     mcp_tools = await mcp_manager.load_mcp_tools_for_conversation(mcp_specs)
 
     return mcp_tools
+
+
+async def run_mcp_validation(agents_config: dict) -> tuple["MCPToolManager", dict]:
+    """Run MCP validation flow and return (manager, results).
+
+    Centralized entry point used by higher-level managers to validate all
+    configured MCP tools.
+
+    Args:
+        agents_config: mapping of agent name -> agent configuration
+
+    Returns:
+        (MCPToolManager, validation_results)
+    """
+    return await validate_and_load_mcp_tools(agents_config)
+
+
+def create_mcp_validation_task(agents_config: dict) -> asyncio.Task | None:
+    """Create a background task to validate MCP tools.
+
+    This utility schedules MCP validation without blocking initialization. If no
+    running event loop is available, returns None and the caller can defer to a
+    later explicit validation.
+
+    The resulting task resolves to (MCPToolManager, validation_results).
+    """
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+            return loop.create_task(run_mcp_validation(agents_config))
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                return loop.create_task(run_mcp_validation(agents_config))
+            # No running loop; caller can defer validation
+            return None
+    except Exception as e:
+        logger.debug(f"MCP validation task creation failed: {e}")
+        return None
 
 
 def load_tools(tools_directory: str | None = None) -> dict[str, FunctionTool]:

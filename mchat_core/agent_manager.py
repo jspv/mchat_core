@@ -53,7 +53,14 @@ from autogen_ext.models.openai._openai_client import (
 from .logging_utils import get_logger, trace  # noqa: F401
 from .model_manager import ModelManager
 from .terminator import SmartReflectorTermination
-from .tool_utils import load_agent_mcp_tools, load_tools, validate_and_load_mcp_tools
+from .tool_utils import (
+    create_mcp_validation_task,
+    load_agent_mcp_tools,
+    load_tools,
+    register_mcp_placeholders,
+    replace_mcp_placeholders_with_real_tools,
+    validate_and_load_mcp_tools,
+)
 
 logger = get_logger(__name__)
 
@@ -233,8 +240,11 @@ class AgentManager:
         # Initialize MCP tool manager and validate MCP tools
         self.mcp_manager = None
         self._mcp_validation_task = None
-        self._mcp_placeholder_tools = {}  # Track placeholder tools
-        self._register_mcp_placeholder_tools()
+        self._mcp_placeholder_tools = {}  # spec_string -> placeholder tool name
+        # Register MCP placeholders via tool_utils
+        self._mcp_placeholder_tools = register_mcp_placeholders(
+            self._agents, self.tools
+        )
         self._start_mcp_validation()
 
     def new_agent(
@@ -536,97 +546,14 @@ class AgentManager:
             "used_by_agents": agents_using_tool,
         }
 
-    def _register_mcp_placeholder_tools(self):
-        """Register placeholder tools for MCP tools found in agent configurations.
-
-        This allows MCP tools to show up in list_tools() immediately, even though
-        the actual MCP server connections are deferred until conversation time.
-        """
-        try:
-            from .tool_utils import MCPToolPlaceholder, parse_mcp_tools
-
-            logger.debug("Starting MCP placeholder tool registration...")
-
-            # Collect all MCP tools from all agents
-            for agent_name, agent_config in self._agents.items():
-                tools = agent_config.get("tools", [])
-                logger.debug(f"Agent {agent_name} has tools: {tools}")
-
-                try:
-                    mcp_specs = parse_mcp_tools(tools, agent_config)
-                    logger.debug(
-                        f"Parsed {len(mcp_specs)} MCP specs for agent {agent_name}"
-                    )
-
-                    for spec in mcp_specs:
-                        logger.debug(f"Processing MCP spec: {spec.spec_string}")
-
-                        # Create a placeholder tool using our MCPToolPlaceholder class
-                        placeholder = MCPToolPlaceholder(spec)
-                        tool_name = placeholder.name
-
-                        # Register the placeholder in the global tool registry
-                        self.tools[tool_name] = placeholder
-                        self._mcp_placeholder_tools[spec.spec_string] = tool_name
-
-                        logger.debug(
-                            f"Registered MCP placeholder tool: {tool_name} for "
-                            f"{spec.spec_string}"
-                        )
-
-                except Exception as e:
-                    logger.error(f"Error parsing MCP tools for agent {agent_name}: {e}")
-
-            logger.debug(
-                f"Finished MCP placeholder registration. Total tools: {len(self.tools)}"
-            )
-
-        except Exception as e:
-            logger.error(f"Error during MCP placeholder tool registration: {e}")
-            # Don't let this break the AgentManager initialization
+    # removed: deprecated _register_mcp_placeholder_tools
+    # (use tool_utils.register_mcp_placeholders)
 
     def _start_mcp_validation(self):
-        """Start MCP tool validation in the background."""
-        # Schedule validation but don't block initialization
-        import asyncio
+        """Start MCP tool validation in the background (delegates to tool_utils)."""
+        self._mcp_validation_task = create_mcp_validation_task(self._agents)
 
-        try:
-            # Try to get the running loop first
-            try:
-                loop = asyncio.get_running_loop()
-                self._mcp_validation_task = loop.create_task(self._validate_mcp_tools())
-            except RuntimeError:
-                # No running loop, try to get the event loop
-                try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        self._mcp_validation_task = loop.create_task(
-                            self._validate_mcp_tools()
-                        )
-                    else:
-                        logger.debug(
-                            "Event loop not running, MCP validation deferred to first "
-                            "conversation"
-                        )
-                except RuntimeError:
-                    # No event loop available
-                    logger.debug(
-                        "No event loop available, MCP validation deferred to first "
-                        "conversation"
-                    )
-        except Exception as e:
-            logger.debug(f"MCP validation setup failed: {e}")
-            # Fail silently, validation will happen on first conversation
-
-    async def _validate_mcp_tools(self):
-        """Validate MCP tools using tool_utils."""
-        try:
-            self.mcp_manager, validation_results = await validate_and_load_mcp_tools(
-                self._agents
-            )
-            logger.debug("MCP tool validation completed during initialization")
-        except Exception as e:
-            logger.error(f"MCP validation failed: {e}")
+    # removed: _validate_mcp_tools (handled by tool_utils.run_mcp_validation)
 
     async def get_agent_mcp_tools(self, agent_name: str) -> dict[str, any]:
         """Get MCP tools for a specific agent.
@@ -650,7 +577,10 @@ class AgentManager:
         # Wait for validation to complete if it's still running
         if self._mcp_validation_task and not self._mcp_validation_task.done():
             logger.debug("Waiting for MCP validation to complete...")
-            await self._mcp_validation_task
+            try:
+                self.mcp_manager, _ = await self._mcp_validation_task
+            except Exception as e:
+                logger.error(f"MCP validation task failed: {e}")
 
         agent_config = self._agents[agent_name]
         mcp_tools = await load_agent_mcp_tools(agent_config, self.mcp_manager)
@@ -661,28 +591,13 @@ class AgentManager:
         return mcp_tools
 
     def _replace_placeholder_tools_with_real_tools(self, mcp_tools: dict):
-        """Replace placeholder tools with actual loaded MCP tools in the global registry."""
-        from .tool_utils import MCPToolPlaceholder
+        """Replace placeholders with actual loaded MCP tools in the global registry.
 
-        for tool_name, tool_func in mcp_tools.items():
-            # Find placeholder tools that haven't been replaced yet
-            placeholders_to_replace = []
-            for spec_string, placeholder_name in self._mcp_placeholder_tools.items():
-                if placeholder_name in self.tools:
-                    tool_obj = self.tools[placeholder_name]
-                    # Check if it's still a placeholder using isinstance
-                    if isinstance(tool_obj, MCPToolPlaceholder):
-                        placeholders_to_replace.append((spec_string, placeholder_name))
-
-            # Replace the first available placeholder with this real tool
-            if placeholders_to_replace:
-                spec_string, placeholder_name = placeholders_to_replace[0]
-                self.tools[placeholder_name] = tool_func
-                logger.debug(
-                    f"Replaced placeholder {placeholder_name} with real MCP tool "
-                    f"{tool_name}"
-                )
-                break
+        For MCP tools, placeholders are regsistered at startup, but the stdio tools are
+        not fully loaded until a conversation starts"""
+        replace_mcp_placeholders_with_real_tools(
+            mcp_tools, self.tools, self._mcp_placeholder_tools
+        )
 
     async def cleanup_mcp_connections(self):
         """Clean up MCP connections when shutting down."""
